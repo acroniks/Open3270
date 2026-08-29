@@ -1,4 +1,4 @@
-#region License
+﻿#region License
 /* 
  *
  * Open3270 - A C# implementation of the TN3270/TN3270E protocol
@@ -24,10 +24,8 @@
  
 #endregion
 using System;
-using System.Web;
 using System.Text;
-using System.Security; 
-using System.Security.Permissions;
+using System.Security;
 using System.IO;
 
 namespace Open3270.Library
@@ -75,11 +73,8 @@ namespace Open3270.Library
 						{
 							Console.WriteLine(text);
 							//
-							// Demand file permission so that we work within the Internet Explorer sandbox
-							//
-							FileIOPermission permission = new FileIOPermission( PermissionState.Unrestricted );
-							permission.AddPathList(FileIOPermissionAccess.Append, AuditFile);
-							permission.Demand(); 
+							// Code Access Security is not supported on .NET 5+, so the file permission
+							// demand that used to guard this write has been removed.
 							//
 							StreamWriter sw = File.AppendText(_auditFile);
 							try
@@ -91,7 +86,6 @@ namespace Open3270.Library
 							{
 								sw.Close();
 							}
-							permission.Deny();
 						}
 						catch (Exception ee)
 						{

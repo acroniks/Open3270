@@ -24,7 +24,6 @@
  
 #endregion
 using System;
-using System.Data;
 using System.ComponentModel;
 using System.IO;
 using System.Text;
@@ -385,7 +384,7 @@ namespace Open3270.TN3270
             // instead of converting mScreenRows to StringBuilder 
             // and then converting it to a string.
 
-			HashAlgorithm hash = (HashAlgorithm)CryptoConfig.CreateFromName("MD5");
+			HashAlgorithm hash = MD5.Create();
 			StringBuilder builder = new StringBuilder();
 			for (i=0; i<mScreenRows.Length; i++)
 			{

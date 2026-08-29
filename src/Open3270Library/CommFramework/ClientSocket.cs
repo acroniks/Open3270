@@ -1,4 +1,4 @@
-#region License
+﻿#region License
 /* 
  *
  * Open3270 - A C# implementation of the TN3270/TN3270E protocol
@@ -26,7 +26,6 @@
 using System;
 using System.IO;
 using System.Security;
-using System.Security.Permissions;
 using System.Net;
 using System.Net.Sockets;
 
@@ -106,10 +105,8 @@ namespace Open3270.Library
 			Disconnect();
 			mState = State.Waiting;
 			//
-			// permissions
-			SocketPermission mySocketPermission1 = new SocketPermission(PermissionState.None);
-			mySocketPermission1.AddPermission(NetworkAccess.Connect, TransportType.All, "localhost", 8800);
-			mySocketPermission1.Demand();
+			// Code Access Security is not supported on .NET 5+, so the socket permission
+			// demand that used to sit here has been removed.
 
 			//
 			// Actually connect
