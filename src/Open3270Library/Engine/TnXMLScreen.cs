@@ -395,6 +395,118 @@ namespace Open3270.TN3270
 			this._ScreenGuid = Guid.NewGuid();
 		}
 
+		/// <summary>
+		/// Builds a screen directly from the emulator's screen buffer, skipping the XML
+		/// serialize/parse round trip that LoadFromString performs. The rendered buffer, rows and
+		/// hash are identical to what Render() produces for the same screen.
+		/// </summary>
+		internal static XMLScreen CreateFromScreenBuffer(int cx, int cy, bool formatted, XMLScreenField[] fields, string[] unformattedRows)
+		{
+			XMLScreen screen = new XMLScreen();
+
+			screen._CX = cx;
+			screen._CY = cy;
+			screen.Formatted = formatted;
+			screen.Field = fields;
+			screen.Unformatted = new XMLUnformattedScreen();
+			screen.Unformatted.Text = unformattedRows;
+			screen.RenderFromRows(unformattedRows);
+
+			return screen;
+		}
+
+		/// <summary>
+		/// The Render() path for screens that arrive as already decoded rows rather than as XML.
+		///
+		/// Render() has to undo the XML encoding and then rebuild every row a character at a time
+		/// with string concatenation. Here the rows are already the characters the screen shows, so
+		/// the buffer is filled in one pass. The result - mScreenBuffer, mScreenRows, Hash and the
+		/// CX/CY clamping - matches Render() for the same screen.
+		/// </summary>
+		private void RenderFromRows(string[] rows)
+		{
+			//
+			// Reset cache
+			//
+			_stringValueCache = null;
+
+			// Same clamping Render() applies, so both paths report the same CX/CY
+			if (_CX == 0 || _CY == 0)
+			{
+				_CX = 132;
+				_CY = 43;
+			}
+			if (_CX < 80)
+				_CX = 80;
+			if (_CY < 25)
+				_CY = 25;
+
+			UserIdentified = null;
+			MatchListIdentified = null;
+
+			mScreenBuffer = new char[_CX * _CY];
+			int i;
+			for (i = 0; i < mScreenBuffer.Length; i++)
+			{
+				mScreenBuffer[i] = ' ';
+			}
+
+			if (rows != null)
+			{
+				int rowLimit = Math.Min(rows.Length, _CY);
+				for (i = 0; i < rowLimit; i++)
+				{
+					string text = rows[i];
+					if (string.IsNullOrEmpty(text))
+						continue;
+					text.CopyTo(0, mScreenBuffer, i * _CX, Math.Min(text.Length, _CX));
+				}
+			}
+
+			//
+			// Superimpose the formatted fields on the unformatted base, as Render() does. Both are
+			// read from the same screen buffer so this is normally a no-op, but keeping it means
+			// the two render paths stay equivalent by construction rather than by assumption.
+			//
+			if (Field != null)
+			{
+				for (i = 0; i < Field.Length; i++)
+				{
+					XMLScreenField field = Field[i];
+					if (field == null || field.Text == null || field.Location == null)
+						continue;
+
+					int offset = field.Location.left + field.Location.top * _CX;
+					for (int chindex = 0; chindex < field.Text.Length; chindex++)
+					{
+						char ch = field.Text[chindex];
+						if (ch < 32 || ch > 126)
+							ch = ' ';
+						int bufNdx = offset + chindex;
+						if (bufNdx >= 0 && bufNdx < mScreenBuffer.Length)
+							mScreenBuffer[bufNdx] = ch;
+					}
+				}
+			}
+
+			mScreenRows = new string[_CY];
+			for (i = 0; i < _CY; i++)
+			{
+				mScreenRows[i] = new string(mScreenBuffer, i * _CX, _CX);
+			}
+
+			//
+			// Same hash input as Render(): the concatenation of every rendered row, which is just
+			// the rendered buffer.
+			//
+			using (HashAlgorithm hash = MD5.Create())
+			{
+				byte[] myHash = hash.ComputeHash(new UnicodeEncoding().GetBytes(mScreenBuffer));
+				this.Hash = BitConverter.ToString(myHash);
+			}
+			this._ScreenGuid = Guid.NewGuid();
+		}
+
 		static public XMLScreen LoadFromString(string text)
 		{
 			XmlSerializer serializer = new XmlSerializer(typeof(XMLScreen));

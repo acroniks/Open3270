@@ -743,18 +743,20 @@ namespace Open3270
 		public bool WaitForText(int x, int y, string text, int timeoutMS)
 		{
 			if (currentConnection == null) throw new TNHostException("TNEmulator is not connected", "There is no currently open TN3270 connection", null);
-			long start = DateTime.Now.Ticks;
-			//bool ok = false;
-			if (Config.AlwaysRefreshWhenWaiting)
-			{
-				lock (this)
-				{
-					DisposeOfCurrentScreenXML();
-					this.currentScreenXML = null;
-				}
-			}
+
+			long deadline = CurrentTimeMS() + timeoutMS;
+
 			do
 			{
+				if (Config.AlwaysRefreshWhenWaiting)
+				{
+					lock (this)
+					{
+						DisposeOfCurrentScreenXML();
+						this.currentScreenXML = null;
+					}
+				}
+
 				if (CurrentScreenXML != null)
 				{
 					string screenText = CurrentScreenXML.GetText(x, y, text.Length);
@@ -765,26 +767,15 @@ namespace Open3270
 						return true;
 					}
 				}
-				//
+
 				if (timeoutMS == 0)
 				{
 					if (Audit != null)
 						Audit.WriteLine("WaitForText('" + text + "') Not found");
 					return false;
 				}
-				//
-				System.Threading.Thread.Sleep(100);
-				if (Config.AlwaysRefreshWhenWaiting)
-				{
-					lock (this)
-					{
-						DisposeOfCurrentScreenXML();
-						this.currentScreenXML = null;
-					}
-				}
-				Refresh(true, 1000);
 			}
-			while (((DateTime.Now.Ticks - start) / 10000) < timeoutMS);
+			while (WaitForScreenUpdate(deadline));
 			//
 			if (Audit != null)
 				Audit.WriteLine("WaitForText('" + text + "') Timed out");
@@ -814,20 +805,19 @@ namespace Open3270
 		public int WaitForTextOnScreen(int timeoutMS, params string[] text)
 		{
 			if (currentConnection == null) throw new TNHostException("TNEmulator is not connected", "There is no currently open TN3270 connection", null);
-			long start = DateTime.Now.Ticks;
-			//bool ok = false;
-			if (Config.AlwaysRefreshWhenWaiting)
-			{
-				lock (this)
-				{
-					DisposeOfCurrentScreenXML();
-					this.currentScreenXML = null;
-				}
-			}
+
+			long deadline = CurrentTimeMS() + timeoutMS;
+
 			do
 			{
 				lock (this)
 				{
+					if (Config.AlwaysRefreshWhenWaiting)
+					{
+						DisposeOfCurrentScreenXML();
+						this.currentScreenXML = null;
+					}
+
 					if (CurrentScreenXML != null)
 					{
 						int index = CurrentScreenXML.LookForTextStrings(text);
@@ -839,28 +829,12 @@ namespace Open3270
 						}
 					}
 				}
-				//
-				if (timeoutMS > 0)
-				{
-
-					//
-					System.Threading.Thread.Sleep(100);
-					if (Config.AlwaysRefreshWhenWaiting)
-					{
-						lock (this)
-						{
-							DisposeOfCurrentScreenXML();
-							this.currentScreenXML = null;
-						}
-					}
-					Refresh(true, 1000);
-				}
 			}
-			while (timeoutMS > 0 && ((DateTime.Now.Ticks - start) / 10000) < timeoutMS);
+			while (timeoutMS > 0 && WaitForScreenUpdate(deadline));
 			//
 			if (Audit != null)
 			{
-				string temp = ""; foreach (string t in text) temp += "t" + "//";
+				string temp = ""; foreach (string t in text) temp += t + "//";
 			
 				Audit.WriteLine("WaitForText('" + temp + "') Timed out");
 			}
@@ -981,6 +955,14 @@ namespace Open3270
 			DisposeOfCurrentScreenXML();
 
 			if (currentConnection == null) throw new TNHostException("TNEmulator is not connected", "There is no currently open TN3270 connection", null);
+
+			if (!this.mConnectionConfiguration.UseLegacyXmlScreenRendering)
+			{
+				// Read the screen buffer straight into an XMLScreen instead of dumping it to XML
+				// text and parsing it back again.
+				return currentConnection.BuildCurrentScreen();
+			}
+
 			if (currentConnection.ExecuteAction(false, "DumpXML"))
 			{
 				//
@@ -992,6 +974,38 @@ namespace Open3270
 		#endregion
 
 		#region Private Methods
+
+		/// <summary>
+		/// Current time on the same millisecond clock the wait loops use for their deadlines.
+		/// </summary>
+		private static long CurrentTimeMS()
+		{
+			return DateTime.Now.Ticks / 10000;
+		}
+
+		/// <summary>
+		/// Blocks until the host sends a new screen, or until the deadline passes.
+		///
+		/// Screen arrival is signalled by currentConnection_RunScriptEvent, which releases the
+		/// semaphore that Refresh waits on, so this is edge triggered - the caller wakes when the
+		/// screen actually changes rather than on a timer. That matters because every wakeup that
+		/// finds nothing new still costs a full screen fetch.
+		/// </summary>
+		/// <param name="deadline">Deadline on the CurrentTimeMS clock</param>
+		/// <returns>False once the deadline has passed, so it can be used as a loop condition</returns>
+		private bool WaitForScreenUpdate(long deadline)
+		{
+			long remaining = deadline - CurrentTimeMS();
+			if (remaining <= 0)
+			{
+				return false;
+			}
+
+			// Refresh blocks on the screen arrival semaphore and throws if the connection drops.
+			// The screen cache is invalidated by the arrival notification itself.
+			Refresh(true, (int)Math.Min(remaining, int.MaxValue));
+			return true;
+		}
 		void currentConnection_CursorLocationChanged(object sender, EventArgs e)
 		{
 			this.OnCursorLocationChanged(e);

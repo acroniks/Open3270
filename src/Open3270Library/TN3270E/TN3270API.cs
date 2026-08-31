@@ -1,4 +1,4 @@
-#region License
+﻿#region License
 /* 
  *
  * Open3270 - A C# implementation of the TN3270/TN3270E protocol
@@ -503,6 +503,19 @@ namespace Open3270.TN3270
             lock (this.tn)
             {
                 return this.tn.Action.Execute(submit, name, args);
+            }
+        }
+        /// <summary>
+        /// Builds the current screen straight from the emulator's screen buffer, without the
+        /// XML round trip that ExecuteAction("DumpXML") plus XMLScreen.LoadFromString needs.
+        /// The dump and the read of the dump happen under a single lock, so the screen cannot
+        /// change underneath the caller part way through.
+        /// </summary>
+        public IXMLScreen BuildCurrentScreen()
+        {
+            lock (this.tn)
+            {
+                return this.tn.Controller.BuildXMLScreen();
             }
         }
         public bool KeyboardCommandCausesSubmit(string name)

@@ -24,6 +24,7 @@
  
 #endregion
 using System;
+using System.Collections.Generic;
 
 namespace Open3270.TN3270
 {
@@ -3067,7 +3068,17 @@ namespace Open3270.TN3270
 			return true;
 		}
 
-		int DumpFieldAsXML(int address, ExtendedAttribute ea)
+		/// <summary>
+		/// Walks the single 3270 field that starts at or before the given address and appends one
+		/// segment per screen row that the field covers.
+		///
+		/// Extracted from the old DumpFieldAsXML so that the XML dump and the direct screen build
+		/// in BuildXMLScreen share one definition of where the fields are and what attributes they
+		/// carry - they cannot drift apart.
+		/// </summary>
+		/// <returns>The address of the field attribute that terminated the field, or -1 when the
+		/// walk did not advance.</returns>
+		int AppendFieldSegments(int address, ExtendedAttribute ea, List<ScreenFieldSegment> segments)
 		{
 			byte fa = this.fakeFA;
 			int faIndex;
@@ -3110,11 +3121,11 @@ namespace Open3270.TN3270
 			int rowEnd = AddresstoRow(baddr) + 1;
 			int remainingLength = length;
 
-			int rowCount;
+			int row;
 
-			for (rowCount = rowStart; rowCount < rowEnd; rowCount++)
+			for (row = rowStart; row < rowEnd; row++)
 			{
-				if (rowCount == rowStart)
+				if (row == rowStart)
 				{
 					if (length > (columnCount - columnStart))
 					{
@@ -3124,60 +3135,22 @@ namespace Open3270.TN3270
 				}
 				else
 				{
-					start = RowColumnToByteAddress(rowCount, 0);
+					start = RowColumnToByteAddress(row, 0);
 					length = Math.Min(columnCount, remainingLength);
 					remainingLength -= length;
 				}
 
-
-				this.telnet.Action.action_output("<Field>");
-				this.telnet.Action.action_output("<Location position=\"" + start + "\" left=\"" + AddressToColumn(start) + "\" top=\"" + AddresstoRow(start) + "\" length=\"" + length + "\"/>");
-				
-				string temp = "";
-				temp += "<Attributes Base=\"" + fa + "\"";
-
-				if (FieldAttribute.IsProtected(fa))
-				{
-					temp += " Protected=\"true\"";
-				}
-				else
-					temp += " Protected=\"false\"";
-				if (FieldAttribute.IsZero(fa))
-				{
-					temp += " FieldType=\"Hidden\"";
-				}
-				else if (FieldAttribute.IsHigh(fa))
-				{
-					temp += " FieldType=\"High\"";
-				}
-				else if (FieldAttribute.IsIntense(fa))
-				{
-					temp += " FieldType=\"Intense\"";
-				}
-				else
-				{
-					if (ea.fg != 0)
-					{
-						temp += " Foreground=\"" + See.GetEfaUnformatted(See.XA_FOREGROUND, ea.fg) + "\"";
-					}
-					if (ea.bg != 0)
-					{
-						temp += " Background=\"" + See.GetEfaUnformatted(See.XA_BACKGROUND, ea.bg) + "\"";
-					}
-					if (ea.gr != 0)
-					{
-						temp += " Highlighting=\"" + See.GetEfaUnformatted(See.XA_HIGHLIGHTING, (byte)(ea.bg | 0xf0)) + "\"";
-					}
-					if ((ea.cs & ExtendedAttribute.CS_MASK) != 0)
-					{
-						temp += " Mask=\"" + See.GetEfaUnformatted(See.XA_CHARSET, (byte)((ea.cs & ExtendedAttribute.CS_MASK) | 0xf0)) + "\"";
-					}
-				}
-
-				temp += "/>";
-				this.telnet.Action.action_output(temp);
-				this.DumpRangeXML(start, length, true, screenBuffer, rowCount, columnCount);
-				this.telnet.Action.action_output("</Field>");
+				ScreenFieldSegment segment = new ScreenFieldSegment();
+				segment.Start = start;
+				segment.Left = AddressToColumn(start);
+				segment.Top = AddresstoRow(start);
+				segment.Length = length;
+				segment.Base = fa;
+				segment.Foreground = ea.fg;
+				segment.Background = ea.bg;
+				segment.Highlighting = ea.gr;
+				segment.CharacterSet = ea.cs;
+				segments.Add(segment);
 			}
 
 			if (baddr <= address)
@@ -3185,6 +3158,211 @@ namespace Open3270.TN3270
 				return -1;
 			}
 			return baddr;
+		}
+
+		/// <summary>
+		/// Walks the whole screen and returns every field, split into one segment per screen row.
+		/// </summary>
+		List<ScreenFieldSegment> EnumerateFieldSegments()
+		{
+			List<ScreenFieldSegment> segments = new List<ScreenFieldSegment>();
+
+			ExtendedAttribute ea = new ExtendedAttribute();
+			int pos = 0;
+			// CFCJR Mar 4,2008 : user tmcquire in post on www.open3270.net
+			// says this do loop can hang up (pos never changes) in certain cases.
+			// Added lastPos check to prevent this.
+			int lastPos = -1;
+			int cnt = 0;
+			do
+			{
+				lastPos = pos;
+				pos = AppendFieldSegments(pos, ea, segments);
+				if (lastPos == pos)
+				{
+					cnt++;
+				}
+				else
+				{
+					cnt = 0;
+				}
+			}
+			while (pos != -1 && cnt < 999);
+
+			return segments;
+		}
+
+		/// <summary>
+		/// The FieldType attribute value for a field attribute byte, or null when the field is
+		/// described by its colour attributes instead. Shared by the XML dump and the direct build.
+		/// </summary>
+		static string GetFieldType(byte fa)
+		{
+			if (FieldAttribute.IsZero(fa))
+			{
+				return "Hidden";
+			}
+			if (FieldAttribute.IsHigh(fa))
+			{
+				return "High";
+			}
+			if (FieldAttribute.IsIntense(fa))
+			{
+				return "Intense";
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Renders the Attributes element for one field segment.
+		/// </summary>
+		string BuildFieldAttributesXML(ScreenFieldSegment segment)
+		{
+			byte fa = segment.Base;
+			string temp = "";
+			temp += "<Attributes Base=\"" + fa + "\"";
+
+			if (FieldAttribute.IsProtected(fa))
+			{
+				temp += " Protected=\"true\"";
+			}
+			else
+				temp += " Protected=\"false\"";
+
+			string fieldType = GetFieldType(fa);
+			if (fieldType != null)
+			{
+				temp += " FieldType=\"" + fieldType + "\"";
+			}
+			else
+			{
+				if (segment.Foreground != 0)
+				{
+					temp += " Foreground=\"" + See.GetEfaUnformatted(See.XA_FOREGROUND, segment.Foreground) + "\"";
+				}
+				if (segment.Background != 0)
+				{
+					temp += " Background=\"" + See.GetEfaUnformatted(See.XA_BACKGROUND, segment.Background) + "\"";
+				}
+				if (segment.Highlighting != 0)
+				{
+					// NB: passes Background, not Highlighting. That is what this code has always
+					// emitted, and XMLScreenAttributes has no Highlighting member to read it back
+					// into, so it is preserved rather than corrected here.
+					temp += " Highlighting=\"" + See.GetEfaUnformatted(See.XA_HIGHLIGHTING, (byte)(segment.Background | 0xf0)) + "\"";
+				}
+				if ((segment.CharacterSet & ExtendedAttribute.CS_MASK) != 0)
+				{
+					temp += " Mask=\"" + See.GetEfaUnformatted(See.XA_CHARSET, (byte)((segment.CharacterSet & ExtendedAttribute.CS_MASK) | 0xf0)) + "\"";
+				}
+			}
+
+			temp += "/>";
+			return temp;
+		}
+
+		/// <summary>
+		/// Translates one screen buffer byte into the character the screen displays for it. Matches
+		/// what DumpRangeXML emits and what XMLScreen.Render then filters out, so the direct build
+		/// and the XML round trip produce identical text.
+		/// </summary>
+		static char TranslateToDisplayCharacter(byte cg)
+		{
+			byte c = Tables.Cg2Ascii[cg];
+			if (c < 32 || c > 126)
+			{
+				return ' ';
+			}
+			return (char)c;
+		}
+
+		string ReadDisplayText(int address, int length)
+		{
+			char[] text = new char[length];
+			bool anyContent = false;
+			for (int i = 0; i < length; i++)
+			{
+				char c = TranslateToDisplayCharacter(screenBuffer[address + i]);
+				if (c != ' ')
+				{
+					anyContent = true;
+				}
+				text[i] = c;
+			}
+
+			// An all blank run comes back as an empty string. That is what the XML round trip
+			// has always produced - XmlSerializer drops element content that is nothing but
+			// whitespace - so callers of GetUnformatedStrings and XMLScreenField.Text already
+			// see empty strings for blank rows and fields today. The rendered screen is padded
+			// back out either way, so this only keeps the shape of that data unchanged.
+			if (!anyContent)
+			{
+				return string.Empty;
+			}
+
+			return new string(text);
+		}
+
+		/// <summary>
+		/// Builds the screen model straight from the screen buffer.
+		///
+		/// This is the fast equivalent of DumpXMLAction followed by XMLScreen.LoadFromString: the
+		/// same XMLScreen, without serializing 2000 characters to XML text and parsing them back
+		/// again on every screen fetch. The field walk is shared with DumpXMLAction through
+		/// EnumerateFieldSegments.
+		/// </summary>
+		internal XMLScreen BuildXMLScreen()
+		{
+			string[] unformattedRows = new string[rowCount];
+			for (int row = 0; row < rowCount; row++)
+			{
+				unformattedRows[row] = ReadDisplayText(RowColumnToByteAddress(row, 0), columnCount);
+			}
+
+			XMLScreenField[] fields = null;
+
+			if (this.isFormatted)
+			{
+				List<ScreenFieldSegment> segments = EnumerateFieldSegments();
+				fields = new XMLScreenField[segments.Count];
+
+				for (int i = 0; i < segments.Count; i++)
+				{
+					ScreenFieldSegment segment = segments[i];
+					XMLScreenField field = new XMLScreenField();
+
+					field.Location = new XMLScreenLocation();
+					field.Location.position = segment.Start;
+					field.Location.left = segment.Left;
+					field.Location.top = segment.Top;
+					field.Location.length = segment.Length;
+
+					field.Attributes = new XMLScreenAttributes();
+					field.Attributes.Base = segment.Base;
+					field.Attributes.Protected = FieldAttribute.IsProtected(segment.Base);
+					field.Attributes.FieldType = GetFieldType(segment.Base);
+
+					// Colours are only carried when there is no FieldType, matching the XML dump.
+					// XMLScreenAttributes has no member for the Highlighting or Mask attributes,
+					// so those are dropped here exactly as they are dropped on deserialization.
+					if (field.Attributes.FieldType == null)
+					{
+						if (segment.Foreground != 0)
+						{
+							field.Attributes.Foreground = See.GetEfaUnformatted(See.XA_FOREGROUND, segment.Foreground);
+						}
+						if (segment.Background != 0)
+						{
+							field.Attributes.Background = See.GetEfaUnformatted(See.XA_BACKGROUND, segment.Background);
+						}
+					}
+
+					field.Text = ReadDisplayText(segment.Start, segment.Length);
+					fields[i] = field;
+				}
+			}
+
+			return XMLScreen.CreateFromScreenBuffer(columnCount, rowCount, this.isFormatted, fields, unformattedRows);
 		}
 
 
@@ -3224,7 +3402,6 @@ namespace Open3270.TN3270
 
 		public bool DumpXMLAction(params object[] args)
 		{
-			int pos = 0;
 			//string name = "DumpXML_action";
 			telnet.Action.action_output("<?xml version=\"1.0\"?>");// encoding=\"utf-16\"?>");
 			telnet.Action.action_output("<XMLScreen xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
@@ -3233,26 +3410,18 @@ namespace Open3270.TN3270
 			if (this.isFormatted)
 			{
 				this.telnet.Action.action_output("<Formatted>true</Formatted>");
-				ExtendedAttribute ea = new ExtendedAttribute();
-				// CFCJR Mar 4,2008 : user tmcquire in post on www.open3270.net
-				// says this do loop can hang up (pos never changes) in certain cases.
-				// Added lastPos check to prevent this.
-				int lastPos = -1;
-				int cnt = 0;
-				do
+
+				List<ScreenFieldSegment> segments = EnumerateFieldSegments();
+				for (int f = 0; f < segments.Count; f++)
 				{
-					lastPos = pos;
-					pos = DumpFieldAsXML(pos, ea);
-					if (lastPos == pos)
-					{
-						cnt++;
-					}
-					else
-					{
-						cnt = 0;
-					}
+					ScreenFieldSegment segment = segments[f];
+
+					this.telnet.Action.action_output("<Field>");
+					this.telnet.Action.action_output("<Location position=\"" + segment.Start + "\" left=\"" + segment.Left + "\" top=\"" + segment.Top + "\" length=\"" + segment.Length + "\"/>");
+					this.telnet.Action.action_output(BuildFieldAttributesXML(segment));
+					this.DumpRangeXML(segment.Start, segment.Length, true, screenBuffer, rowCount, columnCount);
+					this.telnet.Action.action_output("</Field>");
 				}
-				while (pos != -1 && cnt < 999);
 			}
 			else
 			{
@@ -3280,5 +3449,22 @@ namespace Open3270.TN3270
 
 
 
+	}
+
+	/// <summary>
+	/// One row slice of a 3270 field, as produced by walking the screen buffer. Shared by the
+	/// XML dump and the direct screen build so the two stay in step.
+	/// </summary>
+	internal class ScreenFieldSegment
+	{
+		public int Start;
+		public int Left;
+		public int Top;
+		public int Length;
+		public byte Base;
+		public byte Foreground;
+		public byte Background;
+		public byte Highlighting;
+		public byte CharacterSet;
 	}
 }

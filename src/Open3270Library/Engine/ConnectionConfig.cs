@@ -1,4 +1,4 @@
-#region License
+﻿#region License
 /* 
  *
  * Open3270 - A C# implementation of the TN3270/TN3270E protocol
@@ -61,6 +61,7 @@ namespace Open3270
 		private bool submitAllKeyboardCommands = false;
 		private bool refuseTN3270E = false;
 		private bool useSSL = false;
+		private bool useLegacyXmlScreenRendering = false;
 
 
 		internal void Dump(IAudit sout)
@@ -80,6 +81,7 @@ namespace Open3270
 			sout.WriteLine("Config.AlwaysRefreshWhenWaiting " + alwaysRefreshWhenWaiting);
 			sout.WriteLine("Config.SubmitAllKeyboardCommands " + submitAllKeyboardCommands);
 			sout.WriteLine("Config.RefuseTN3270E " + refuseTN3270E);
+			sout.WriteLine("Config.UseLegacyXmlScreenRendering " + useLegacyXmlScreenRendering);
 		}
 
 		/// <summary>
@@ -196,6 +198,20 @@ namespace Open3270
 		{
 			get { return fastScreenMode; }
 			set { fastScreenMode = value; }
+		}
+
+
+		/// <summary>
+		/// Whether to build the screen model by dumping it to XML and parsing it back, the way
+		/// this library has always done, rather than reading the emulator's screen buffer
+		/// directly. Both produce the same screen - the direct build just skips the round trip,
+		/// which dominates the cost of a screen fetch under load. Default is false.
+		/// Set this to true only as a fallback if the direct build ever misreads a screen.
+		/// </summary>
+		public bool UseLegacyXmlScreenRendering
+		{
+			get { return useLegacyXmlScreenRendering; }
+			set { useLegacyXmlScreenRendering = value; }
 		}
 
 
