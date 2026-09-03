@@ -1,0 +1,42 @@
+name: no-internal-refs
+
+# This is a public MIT fork of Open3270. Nothing naming a specific employer,
+# mainframe vendor, host application, screen or logon path belongs in it —
+# that material lives in a separate private repository. This job is the
+# backstop for the moments when that is easy to forget.
+#
+# To extend: add a term to DENY below. Keep terms specific enough that they
+# cannot appear in generic TN3270 code.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan tracked files for internal references
+        run: |
+          DENY='TSYS|CICSV[0-9]|otis7[0-9]{3}|\bMAMM\b|\bBMO\b|\bNCCS\b|\bCCAPS\b|LOGON APPLID'
+          # Exclude this workflow itself, which necessarily contains the terms.
+          if git grep -nEI "$DENY" -- . ':(exclude).github/workflows/no-internal-refs.yml'; then
+            echo
+            echo "::error::Internal reference found in a tracked file."
+            echo "This repository is public. System names, host applications, logon"
+            echo "paths and screen names belong in the private bindings repository."
+            exit 1
+          fi
+          echo "No internal references found."
+
+      - name: Scan for recorded session data
+        run: |
+          if git ls-files | grep -Ei '\.(corpus|tn3270log)$|(^|/)(corpus|recordings)/'; then
+            echo "::error::Recorded session data is tracked. Corpus recordings are raw"
+            echo "wire bytes and may contain live data. They belong in the controlled"
+            echo "corpus store, never in git."
+            exit 1
+          fi
+          echo "No recorded session data tracked."

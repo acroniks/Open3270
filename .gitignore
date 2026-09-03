@@ -1,6 +1,7 @@
 *.vssscc
 *.vspscc
 Thumbs.db
+.DS_Store
 #Ignore files build by Visual Studio
 *.obj
 *.exe
@@ -29,3 +30,28 @@ obj/
 _ReSharper*/
 [Tt]est[Rr]esult*
 /packages
+
+# ---------------------------------------------------------------------------
+# Private / non-public material. This is a public MIT fork: nothing describing
+# a specific employer, mainframe vendor, host, or screen layout belongs in it.
+# See .github/workflows/no-internal-refs.yml, which fails the build if any of
+# it lands in a tracked file anyway.
+# ---------------------------------------------------------------------------
+
+# Local agent instructions and working notes. Deliberately untracked: the
+# public half of this file lives in docs/ARCHITECTURE.md.
+CLAUDE.md
+AGENTS.md
+.claude/
+
+# Design notes and anything system-specific
+documentation/screen-graph-design.*
+design-notes.md
+*.private.md
+
+# Recorded sessions. Corpus recordings are raw TN3270 wire bytes and may
+# contain live data in cleartext EBCDIC. They never belong in git.
+*.corpus
+*.tn3270log
+corpus/
+recordings/
