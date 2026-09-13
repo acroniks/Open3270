@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Open3270;
 
@@ -19,6 +20,58 @@ namespace RecorderRoundTripTest
 		public void ClientToHost(byte[] buffer, int length) { ClientToHostCalls++; }
 		public void Keystroke(string tag, int length) { Tags.Add(tag); Lengths.Add(length); }
 		public void Dispose() { }
+	}
+
+	/// <summary>
+	/// Picks the outbound records out of the trace. On the replay path SendRawOutput logs
+	/// "net_rawout2 [n] xx xx xx", which is the only way to see what the emulator sent without
+	/// recording the replay - which the recorder deliberately refuses to do.
+	/// </summary>
+	class RawOutCapturingAudit : IAudit
+	{
+		public readonly List<byte[]> Sent = new List<byte[]>();
+
+		public void Write(string text) { }
+
+		public void WriteLine(string text)
+		{
+			if (text == null)
+			{
+				return;
+			}
+
+			int marker = text.IndexOf("net_rawout2");
+			if (marker < 0)
+			{
+				return;
+			}
+
+			int close = text.IndexOf(']', marker);
+			if (close < 0)
+			{
+				return;
+			}
+
+			List<byte> bytes = new List<byte>();
+			foreach (string token in text.Substring(close + 1)
+				.Split(new char[] { ' ', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+			{
+				byte value;
+				if (byte.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+				{
+					bytes.Add(value);
+				}
+				else
+				{
+					return;   // not a clean hex record; ignore rather than guess
+				}
+			}
+
+			if (bytes.Count > 0)
+			{
+				Sent.Add(bytes.ToArray());
+			}
+		}
 	}
 
 	/// <summary>Captures whatever the recorder reports.</summary>
@@ -67,6 +120,10 @@ namespace RecorderRoundTripTest
 				Console.WriteLine();
 				Console.WriteLine("---- 5. a bad destination fails loudly, at the caller ----");
 				BadDestinationFailsLoudly(dir);
+
+				Console.WriteLine();
+				Console.WriteLine("---- 6. bidirectional replay compares what the client sent ----");
+				BidirectionalReplay(dir);
 			}
 			finally
 			{
@@ -385,6 +442,121 @@ namespace RecorderRoundTripTest
 			}
 			Check(sink.Lines.Count == 0,
 				"a healthy recording says nothing, got: [" + string.Join(" | ", sink.Lines) + "]");
+		}
+
+		#endregion
+
+		#region 6. bidirectional replay
+
+		/// <summary>
+		/// A recording carries what the client sent as well as what the host did, so replaying one
+		/// while driving the same actions checks that the automation still keys the same bytes.
+		/// This proves the comparison works in both directions: identical bytes report no
+		/// divergence, and a single altered byte is caught at the right offset.
+		/// </summary>
+		static void BidirectionalReplay(string dir)
+		{
+			// Learn what the emulator actually sends, rather than predicting it. Negotiation
+			// responses depend on the engine, so a hard coded expectation would rot.
+			string hostOnly = Path.Combine(dir, "bidi-host.log");
+			using (SessionRecorder recorder = new SessionRecorder(hostOnly, null))
+			{
+				foreach (byte[] record in Negotiation())
+				{
+					recorder.HostToClient(record, record.Length);
+				}
+				byte[] screen = BuildScreen();
+				recorder.HostToClient(screen, screen.Length);
+			}
+
+			RawOutCapturingAudit captured = new RawOutCapturingAudit();
+			using (TNEmulator emulator = new TNEmulator())
+			{
+				emulator.Audit = captured;
+				emulator.Debug = true;
+				emulator.Config.LogFile = new StreamReader(hostOnly);
+				emulator.Config.ThrowExceptionOnLockedScreen = false;
+				emulator.Connect();
+				WaitFor(delegate { return captured.Sent.Count > 0; }, 5000);
+				System.Threading.Thread.Sleep(500);
+				emulator.Close();
+			}
+
+			Check(captured.Sent.Count > 0,
+				"the emulator's outbound records are observable, got " + captured.Sent.Count);
+			if (captured.Sent.Count == 0)
+			{
+				return;
+			}
+
+			int totalBytes = captured.Sent.Sum(r => r.Length);
+
+			// Matching case: the same bytes the emulator will send.
+			int compared, divergences, firstAt;
+			Replay(dir, "bidi-match.log", captured.Sent, -1, out compared, out divergences, out firstAt);
+
+			Check(compared == totalBytes,
+				"every recorded client byte was compared, " + compared + " of " + totalBytes);
+			Check(divergences == 0,
+				"identical client bytes report no divergence, got " + divergences);
+
+			// Altered case: one byte changed, at a known offset.
+			List<byte[]> altered = captured.Sent.Select(r => (byte[])r.Clone()).ToList();
+			altered[0][0] = (byte)(altered[0][0] ^ 0xFF);
+
+			Replay(dir, "bidi-altered.log", altered, -1, out compared, out divergences, out firstAt);
+
+			Check(divergences > 0,
+				"an altered client byte is detected, got " + divergences + " divergence(s)");
+			Check(firstAt == 0,
+				"the first divergence is reported at offset 0, got " + firstAt);
+		}
+
+		/// <summary>
+		/// Writes a recording carrying both directions, replays it, and reports the comparison.
+		/// Client lines go after the host lines: the emulator sends while the host lines are being
+		/// fed, so by the time the reader reaches them the bytes are already queued to compare.
+		/// </summary>
+		static void Replay(string dir, string name, List<byte[]> clientRecords, int unused,
+			out int compared, out int divergences, out int firstAt)
+		{
+			string path = Path.Combine(dir, name);
+			using (SessionRecorder recorder = new SessionRecorder(path, null))
+			{
+				foreach (byte[] record in Negotiation())
+				{
+					recorder.HostToClient(record, record.Length);
+				}
+				byte[] screen = BuildScreen();
+				recorder.HostToClient(screen, screen.Length);
+
+				foreach (byte[] record in clientRecords)
+				{
+					recorder.ClientToHost(record, record.Length);
+				}
+			}
+
+			using (TNEmulator emulator = new TNEmulator())
+			{
+				emulator.Config.LogFile = new StreamReader(path);
+				emulator.Config.ThrowExceptionOnLockedScreen = false;
+				emulator.Connect();
+
+				int settled = -1;
+				WaitFor(delegate
+				{
+					int now = emulator.ClientBytesCompared;
+					bool stable = now > 0 && now == settled;
+						settled = now;
+					return stable;
+				}, 8000);
+
+				compared = emulator.ClientBytesCompared;
+				divergences = emulator.ClientByteDivergences;
+				firstAt = emulator.FirstClientByteDivergence;
+
+				emulator.Close();
+			}
 		}
 
 		#endregion

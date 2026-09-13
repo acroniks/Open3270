@@ -518,6 +518,24 @@ namespace Open3270.TN3270
                 return this.tn.Controller.BuildXMLScreen();
             }
         }
+        /// <summary>Client bytes compared against a replayed recording.</summary>
+        public int ClientBytesCompared
+        {
+            get { return this.tn == null ? 0 : this.tn.ClientBytesCompared; }
+        }
+
+        /// <summary>How many of those did not match what the emulator sent.</summary>
+        public int ClientByteDivergences
+        {
+            get { return this.tn == null ? 0 : this.tn.ClientByteDivergences; }
+        }
+
+        /// <summary>Offset of the first mismatch, or -1 if there was none.</summary>
+        public int FirstClientByteDivergence
+        {
+            get { return this.tn == null ? -1 : this.tn.FirstClientByteDivergence; }
+        }
+
         /// <summary>
         /// Rows in the negotiated screen geometry, or zero when not connected.
         /// </summary>

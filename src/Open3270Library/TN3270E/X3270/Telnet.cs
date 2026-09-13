@@ -72,6 +72,15 @@ namespace Open3270.TN3270
 		private byte logClientFirstDivergenceActual = 0;
 		private bool logClientDivergenceReported = false;
 
+		/// <summary>Client bytes compared against the recording so far.</summary>
+		internal int ClientBytesCompared { get { return this.logClientByteOffset; } }
+
+		/// <summary>How many of those did not match.</summary>
+		internal int ClientByteDivergences { get { return this.logClientDivergenceCount; } }
+
+		/// <summary>Offset of the first mismatch, or -1 if there was none.</summary>
+		internal int FirstClientByteDivergence { get { return this.logClientFirstDivergenceOffset; } }
+
 
 		#region Services
 

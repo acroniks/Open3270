@@ -105,6 +105,57 @@ namespace Open3270
 		/// Returns whether or not this session is connected to the mainframe.
 		/// </summary>
 		/// <summary>
+		/// Client bytes compared against a replayed recording, and how many did not match.
+		/// </summary>
+		/// <remarks>
+		/// Meaningful only while replaying through <see cref="ConnectionConfig.LogFile"/>. A
+		/// recording carries what the client sent as well as what the host did, so replaying one
+		/// while driving the same flow checks that the automation still keys the same bytes - a
+		/// script regression test for free, from recordings gathered for other reasons.
+		/// <para>
+		/// Divergence is reported rather than thrown: a replay runs offline against a recording,
+		/// so it cannot protect live data, and failing the run would stop the rest of a regression
+		/// reporting. Assert on these instead.
+		/// </para>
+		/// </remarks>
+		public int ClientBytesCompared
+		{
+			get
+			{
+				if (this.currentConnection == null)
+					return 0;
+				return this.currentConnection.ClientBytesCompared;
+			}
+		}
+
+		/// <summary>
+		/// How many replayed client bytes did not match what the emulator sent. Zero means the
+		/// automation keyed exactly what the recording did. See <see cref="ClientBytesCompared"/>.
+		/// </summary>
+		public int ClientByteDivergences
+		{
+			get
+			{
+				if (this.currentConnection == null)
+					return 0;
+				return this.currentConnection.ClientByteDivergences;
+			}
+		}
+
+		/// <summary>
+		/// Offset of the first client byte that did not match, or -1 if none did.
+		/// </summary>
+		public int FirstClientByteDivergence
+		{
+			get
+			{
+				if (this.currentConnection == null)
+					return -1;
+				return this.currentConnection.FirstClientByteDivergence;
+			}
+		}
+
+		/// <summary>
 		/// Rows in the negotiated screen geometry, or zero when not connected.
 		/// </summary>
 		/// <remarks>
