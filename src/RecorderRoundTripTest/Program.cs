@@ -21,6 +21,14 @@ namespace RecorderRoundTripTest
 		public void Dispose() { }
 	}
 
+	/// <summary>Captures whatever the recorder reports.</summary>
+	class CollectingAudit : IAudit
+	{
+		public readonly List<string> Lines = new List<string>();
+		public void Write(string text) { }
+		public void WriteLine(string text) { Lines.Add(text); }
+	}
+
 	class Program
 	{
 		static int failures;
@@ -55,6 +63,10 @@ namespace RecorderRoundTripTest
 				Console.WriteLine();
 				Console.WriteLine("---- 4. a recording survives a process that never disposes ----");
 				DurableWithoutDispose(dir);
+
+				Console.WriteLine();
+				Console.WriteLine("---- 5. a bad destination fails loudly, at the caller ----");
+				BadDestinationFailsLoudly(dir);
 			}
 			finally
 			{
@@ -320,6 +332,59 @@ namespace RecorderRoundTripTest
 				System.Threading.Thread.Sleep(25);
 			}
 			return false;
+		}
+
+		#endregion
+
+		#region 5. bad destination
+
+		/// <summary>
+		/// A collector that silently fails to collect is worse than one that refuses to start, so
+		/// the constructor opens the log rather than leaving it to the writer thread. A missing
+		/// directory is created; an impossible path throws where the caller can see it.
+		/// </summary>
+		static void BadDestinationFailsLoudly(string dir)
+		{
+			// A directory that does not exist yet is created rather than failing.
+			string nested = Path.Combine(dir, "made", "up", "path", "session.log");
+			bool created = false;
+			try
+			{
+				using (SessionRecorder r = new SessionRecorder(nested, null))
+				{
+					created = true;
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("    (unexpected: " + e.GetType().Name + ")");
+			}
+			Check(created && File.Exists(nested),
+				"a missing directory is created rather than swallowed");
+
+			// An impossible path throws at construction, not silently on a background thread.
+			string impossible = Path.Combine(dir, "not-a-dir.txt", "session.log");
+			File.WriteAllText(Path.Combine(dir, "not-a-dir.txt"), "I am a file, not a directory");
+
+			bool threw = false;
+			try
+			{
+				using (SessionRecorder r = new SessionRecorder(impossible, null)) { }
+			}
+			catch (Exception)
+			{
+				threw = true;
+			}
+			Check(threw, "an unusable path throws at the caller instead of failing silently");
+
+			// The audit sink is where a running session's trouble should surface, not the console.
+			CollectingAudit sink = new CollectingAudit();
+			using (SessionRecorder r = new SessionRecorder(Path.Combine(dir, "audited.log"), null, sink))
+			{
+				r.HostToClient(new byte[] { 0x01 }, 1);
+			}
+			Check(sink.Lines.Count == 0,
+				"a healthy recording says nothing, got: [" + string.Join(" | ", sink.Lines) + "]");
 		}
 
 		#endregion

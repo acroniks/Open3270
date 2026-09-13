@@ -69,6 +69,19 @@ namespace Open3270
 		private readonly SessionRecordingMetadata metadata;
 
 		/// <summary>
+		/// Where diagnostics go. The library has no knowledge of a host application's logging, so
+		/// without one of these a recorder's complaints go to the console - which for a service is
+		/// usually nowhere at all.
+		/// </summary>
+		private readonly IAudit audit;
+
+		/// <summary>
+		/// Opened by the constructor rather than by the writer thread, so that a bad path or a
+		/// permission problem throws where the caller can catch it.
+		/// </summary>
+		private readonly StreamWriter writer;
+
+		/// <summary>
 		/// Guards the queue, the keystroke list and the disposal flag. Private by design: the
 		/// recorder must never contend on a lock that Telnet holds.
 		/// </summary>
@@ -78,6 +91,12 @@ namespace Open3270
 		private Thread writerThread;
 		private bool stopping;
 		private bool disposed;
+
+		/// <summary>
+		/// Set when the writer thread has given up. Without it the queue grows without bound for
+		/// the life of the session, because nothing is draining it.
+		/// </summary>
+		private bool writerFailed;
 
 		/// <summary>
 		/// Set when the sidecar no longer reflects the metadata, cleared once it is rewritten.
@@ -99,21 +118,61 @@ namespace Open3270
 		/// Recording metadata. May be null, in which case an empty sidecar is written.
 		/// </param>
 		public SessionRecorder(string path, SessionRecordingMetadata metadata)
+			: this(path, metadata, null)
+		{
+		}
+
+
+		/// <summary>
+		/// Starts recording to the given path, reporting any trouble to <paramref name="audit"/>.
+		/// </summary>
+		/// <param name="path">Path of the .log file to write. Resolved to an absolute path.</param>
+		/// <param name="metadata">
+		/// Recording metadata. May be null, in which case an empty sidecar is written.
+		/// </param>
+		/// <param name="audit">
+		/// Where to report trouble. Pass the same sink as <see cref="TNEmulator.Audit"/>; null
+		/// sends diagnostics to the console instead, which a service will not capture.
+		/// </param>
+		/// <exception cref="IOException">
+		/// The log could not be opened. Thrown here, on the caller's thread, deliberately: a
+		/// collector that silently fails to collect is worse than one that refuses to start.
+		/// </exception>
+		public SessionRecorder(string path, SessionRecordingMetadata metadata, IAudit audit)
 		{
 			if (string.IsNullOrEmpty(path))
 			{
 				throw new ArgumentNullException("path");
 			}
 
-			this.logPath = path;
-			this.sidecarPath = Path.ChangeExtension(path, ".json");
+			// Absolute from here on, so that every message names a path the caller can go and look
+			// at. A relative path resolves against the working directory, which is not where most
+			// people expect it to be.
+			this.logPath = Path.GetFullPath(path);
+			this.sidecarPath = Path.ChangeExtension(this.logPath, ".json");
+			this.audit = audit;
 			this.metadata = metadata ?? new SessionRecordingMetadata();
 
 			if (string.IsNullOrEmpty(this.metadata.RecordingId))
 			{
-				this.metadata.RecordingId = Path.GetFileNameWithoutExtension(path);
+				this.metadata.RecordingId = Path.GetFileNameWithoutExtension(this.logPath);
 			}
 			this.metadata.CapturedAtUtc = DateTime.UtcNow;
+
+			string directory = Path.GetDirectoryName(this.logPath);
+			if (!string.IsNullOrEmpty(directory))
+			{
+				Directory.CreateDirectory(directory);
+			}
+
+			// Flush per line. The cost is a write syscall per record, on the writer thread and
+			// never on the socket receive thread, which is the right trade for a file whose whole
+			// purpose is to survive the process that wrote it.
+			this.writer = new StreamWriter(this.logPath, false);
+			this.writer.AutoFlush = true;
+
+			// Write the sidecar up front so that an abandoned recording still has one.
+			this.WriteSidecar();
 
 			// Nothing about durability may depend on Dispose being reached. A worker killed mid
 			// session, an Environment.Exit, or an unhandled exception on another thread all skip
@@ -257,7 +316,7 @@ namespace Open3270
 
 			lock (this.sync)
 			{
-				if (this.disposed)
+				if (this.disposed || this.writerFailed)
 				{
 					return;
 				}
@@ -307,12 +366,8 @@ namespace Open3270
 		{
 			try
 			{
-				using (StreamWriter writer = new StreamWriter(this.logPath, false))
 				{
-					// Flush per line. The cost is a write syscall per record, on this thread and
-					// never on the socket receive thread, which is the right trade for a file
-					// whose whole purpose is to survive the process that wrote it.
-					writer.AutoFlush = true;
+					StreamWriter writer = this.writer;
 
 					while (true)
 					{
@@ -359,8 +414,44 @@ namespace Open3270
 			catch (Exception e)
 			{
 				// A recorder must never take the session down with it. The collector is passive by
-				// construction, and a failure to record is not a failure of the session.
-				Console.WriteLine("Session recorder stopped writing " + this.logPath + ": " + e.Message);
+				// construction, and a failure to record is not a failure of the session. But stop
+				// accepting, or the queue grows for the rest of the session with nothing draining
+				// it - a slow leak on a long lived worker.
+				lock (this.sync)
+				{
+					this.writerFailed = true;
+				}
+
+				this.Report("Session recorder stopped writing " + this.logPath + ": " + e.Message
+					+ " - nothing further will be recorded for this session.");
+			}
+			finally
+			{
+				try
+				{
+					this.writer.Dispose();
+				}
+				catch (Exception)
+				{
+					// Already reported, and there is nowhere useful left to go.
+				}
+			}
+		}
+
+
+		/// <summary>
+		/// Reports a problem to the audit sink, or to the console when there is none.
+		/// </summary>
+		private void Report(string message)
+		{
+			IAudit sink = this.audit;
+			if (sink != null)
+			{
+				sink.WriteLine(message);
+			}
+			else
+			{
+				Console.WriteLine(message);
 			}
 		}
 
@@ -415,7 +506,7 @@ namespace Open3270
 			}
 			catch (Exception e)
 			{
-				Console.WriteLine("Session recorder could not write " + this.sidecarPath + ": " + e.Message);
+				this.Report("Session recorder could not write " + this.sidecarPath + ": " + e.Message);
 			}
 		}
 
