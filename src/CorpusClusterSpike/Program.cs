@@ -735,6 +735,7 @@ namespace CorpusClusterSpike
 				}
 			}
 
+			ReportTargetCoverage(formatted, ordered);
 			ReportOutliers(ordered);
 			ReportTitles(formatted, ordered);
 			ReportNearMisses(ordered);
@@ -954,6 +955,88 @@ namespace CorpusClusterSpike
 				Console.WriteLine("    ... and " + (fields.Count - 40) + " more");
 			}
 		}
+
+		/// <summary>
+		/// Compares what each target produced. Targets mapped to the same variant are supposed to
+		/// be identical by definition, so a signature that appears for one and not another is
+		/// either a variant split that was mis-declared or drift between two regions of the same
+		/// vendor platform. This is the cross-target differential, and it needs no golden baseline
+		/// - the targets check each other.
+		/// </summary>
+		static void ReportTargetCoverage(List<CapturedScreen> formatted, List<Cluster> clusters)
+		{
+			List<string> targets = formatted
+				.Select(s => s.Target)
+				.Distinct()
+				.OrderBy(t => t)
+				.ToList();
+
+			if (targets.Count < 2)
+			{
+				return;
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("================ across targets ================");
+			Console.WriteLine("  " + targets.Count + " targets in this corpus: "
+				+ string.Join(", ", targets));
+
+			List<Cluster> everywhere = new List<Cluster>();
+			List<Cluster> partial = new List<Cluster>();
+
+			foreach (Cluster cluster in clusters)
+			{
+				int seen = cluster.Members.Select(m => m.Target).Distinct().Count();
+				if (seen == targets.Count)
+				{
+					everywhere.Add(cluster);
+				}
+				else
+				{
+					partial.Add(cluster);
+				}
+			}
+
+			Console.WriteLine("  signatures in every target     " + everywhere.Count
+				+ " of " + clusters.Count);
+
+			if (partial.Count == 0)
+			{
+				Console.WriteLine();
+				Console.WriteLine("  Every signature appears in every target. If these targets are declared as");
+				Console.WriteLine("  one variant, that declaration is confirmed by evidence rather than assumed,");
+				Console.WriteLine("  and one set of bindings serves all of them.");
+				return;
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("  signatures missing from some target:");
+			foreach (Cluster cluster in partial.Take(20))
+			{
+				List<string> seen = cluster.Members.Select(m => m.Target).Distinct().OrderBy(t => t).ToList();
+				List<string> missing = targets.Where(t => !seen.Contains(t)).ToList();
+
+				string title = cluster.Members
+					.Select(m => m.Title)
+					.FirstOrDefault(t => !string.IsNullOrEmpty(t));
+
+				Console.WriteLine("    [" + (clusters.IndexOf(cluster) + 1).ToString("D2") + "]  "
+					+ cluster.Members.Count + " screen(s), in: " + string.Join(", ", seen)
+					+ "   missing from: " + string.Join(", ", missing)
+					+ (string.IsNullOrEmpty(title) ? "" : "   \"" + title + "\""));
+			}
+			if (partial.Count > 20)
+			{
+				Console.WriteLine("    ... and " + (partial.Count - 20) + " more");
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("  Each of these is one of three things, and they need telling apart: a screen");
+			Console.WriteLine("  the flow simply did not visit on that target - the dull and likely case; a");
+			Console.WriteLine("  genuine layout difference, meaning these targets are not one variant; or");
+			Console.WriteLine("  drift, meaning one region has changed and the other has not yet.");
+		}
+
 
 		/// <summary>
 		/// Reports small clusters that sit a few fields away from a much larger one. A signature
