@@ -116,12 +116,14 @@ namespace CorpusClusterSpike
 				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
 				Console.WriteLine("                          [--title-cols <left> <len>]");
 				Console.WriteLine("                          [--ignore-rows 6-8,22]  excluded from identity");
+				Console.WriteLine("                          [--emit-bindings <file.json>]  draft node bindings");
 				return 2;
 			}
 
 			string corpusDir = args[0];
 			string outDir = null;
 			int diffA = -1, diffB = -1;
+			string bindingsPath = null;
 			for (int i = 1; i < args.Length - 1; i++)
 			{
 				if (args[i] == "--out")
@@ -140,6 +142,10 @@ namespace CorpusClusterSpike
 				{
 					int.TryParse(args[i + 1], out TitleLeft);
 					int.TryParse(args[i + 2], out TitleLength);
+				}
+				else if (args[i] == "--emit-bindings")
+				{
+					bindingsPath = args[i + 1];
 				}
 				else if (args[i] == "--ignore-rows")
 				{
@@ -214,6 +220,11 @@ namespace CorpusClusterSpike
 			if (diffA > 0 && diffB > 0)
 			{
 				DiffClusters(clusters, diffA, diffB);
+			}
+
+			if (bindingsPath != null)
+			{
+				EmitBindings(clusters, bindingsPath);
 			}
 
 			return 0;
@@ -1437,6 +1448,155 @@ namespace CorpusClusterSpike
 
 			Console.WriteLine();
 			Console.WriteLine("  Dumps written to " + Path.GetFullPath(outDir));
+		}
+
+		#endregion
+
+		#region draft bindings
+
+		/// <summary>
+		/// Writes a draft binding per cluster: everything the corpus knows, with blanks where only
+		/// a person does. A recording is not a flow and a cluster is not a node - this produces a
+		/// draft for review, not a finished binding, and the TODO fields are the review list.
+		/// </summary>
+		static void EmitBindings(List<Cluster> clusters, string path)
+		{
+			StringBuilder json = new StringBuilder();
+			// Strict JSON, no comments: appsettings tolerates them but JsonSerializer does not,
+			// and the review items are more useful as data anyway - CI can fail a binding whose
+			// review list is not empty.
+			json.AppendLine("{");
+			json.AppendLine("  \"schemaVersion\": 1,");
+			json.AppendLine("  \"variant\": null,");
+			json.AppendLine("  \"excludedRows\": [" + string.Join(", ",
+				IgnoredRows.OrderBy(r => r)) + "],");
+			json.AppendLine("  \"review\": [\"variant\"],");
+			json.AppendLine("  \"nodes\": [");
+
+			for (int i = 0; i < clusters.Count; i++)
+			{
+				Cluster cluster = clusters[i];
+				CapturedScreen first = cluster.Members[0];
+
+				List<string> targets = cluster.Members.Select(m => m.Target).Distinct().OrderBy(t => t).ToList();
+				Anchor top = cluster.Candidates.FirstOrDefault();
+
+				json.AppendLine("    {");
+				json.AppendLine("      \"name\": " + Quote(Suggest(top)) + ",");
+				json.AppendLine("      \"transaction\": null,");
+				json.AppendLine("      \"navFieldWritable\": null,");
+				json.AppendLine("      \"acceptedKeys\": [],");
+				json.AppendLine("      \"transient\": false,");
+				json.AppendLine("      \"excludedRows\": [],");
+				json.AppendLine("      \"review\": [");
+				json.AppendLine("        \"name: confirm, it is derived from the strongest anchor\",");
+				json.AppendLine("        \"transaction: nav field code that reaches this screen\",");
+				json.AppendLine("        \"navFieldWritable: can a transaction be keyed from here\",");
+				json.AppendLine("        \"acceptedKeys: which keys this screen defines\",");
+				json.AppendLine("        \"excludedRows: freeform regions a person types into\"");
+				json.AppendLine("      ],");
+				json.AppendLine("      \"anchors\": [");
+
+				List<Anchor> anchors = cluster.Candidates.Take(6).ToList();
+				for (int a = 0; a < anchors.Count; a++)
+				{
+					json.Append("        { \"text\": ").Append(Quote(anchors[a].Text));
+					json.Append(", \"row\": ").Append(anchors[a].Top);
+					json.Append(", \"col\": ").Append(anchors[a].Left);
+					json.Append(", \"len\": ").Append(anchors[a].Text.Length);
+					json.Append(", \"role\": ").Append(a == 0 ? "\"required\"" : "\"signal\"");
+					json.Append(" }").Append(a < anchors.Count - 1 ? "," : "");
+					json.AppendLine();
+				}
+
+				json.AppendLine("      ],");
+				json.AppendLine("      \"geometry\": {");
+				json.AppendLine("        \"signature\": " + Quote(first.Signature) + ",");
+				json.AppendLine("        \"fieldCount\": " + first.FieldCount + ",");
+				json.AppendLine("        \"cx\": " + first.CX + ", \"cy\": " + first.CY);
+				json.AppendLine("      },");
+				json.AppendLine("      \"evidence\": {");
+				json.AppendLine("        \"screens\": " + cluster.Members.Count + ",");
+				json.AppendLine("        \"recordings\": " + cluster.Members.Select(m => m.Recording).Distinct().Count() + ",");
+				json.AppendLine("        \"targets\": [" + string.Join(", ", targets.Select(Quote)) + "],");
+				json.AppendLine("        \"anchorCandidates\": " + cluster.Candidates.Count);
+				json.AppendLine("      }");
+				json.Append("    }").AppendLine(i < clusters.Count - 1 ? "," : "");
+			}
+
+			json.AppendLine("  ]");
+			json.AppendLine("}");
+
+			File.WriteAllText(path, json.ToString());
+
+			int unnamed = clusters.Count(c => c.Candidates.Count == 0);
+			Console.WriteLine();
+			Console.WriteLine("================ draft bindings ================");
+			Console.WriteLine("  " + clusters.Count + " node(s) written to " + Path.GetFullPath(path));
+			if (unnamed > 0)
+			{
+				Console.WriteLine("  " + unnamed + " have no anchor candidate and are named TODO - those need a human");
+				Console.WriteLine("  to find something on the screen that identifies it.");
+			}
+			Console.WriteLine("  Every TODO is a review item. A cluster is not a node until someone says so.");
+		}
+
+		/// <summary>Suggests a node name from its strongest anchor, or TODO when there is none.</summary>
+		static string Suggest(Anchor anchor)
+		{
+			if (anchor == null || string.IsNullOrEmpty(anchor.Text))
+			{
+				return "TODO_UNNAMED";
+			}
+
+			StringBuilder name = new StringBuilder();
+			foreach (char c in anchor.Text.ToUpperInvariant())
+			{
+				if (char.IsLetterOrDigit(c))
+				{
+					name.Append(c);
+				}
+				else if (name.Length > 0 && name[name.Length - 1] != '_')
+				{
+					name.Append('_');
+				}
+			}
+			return name.ToString().Trim('_');
+		}
+
+		/// <summary>JSON string literal.</summary>
+		static string Quote(string value)
+		{
+			if (value == null)
+			{
+				return "null";
+			}
+
+			StringBuilder quoted = new StringBuilder(value.Length + 2);
+			quoted.Append('"');
+			foreach (char c in value)
+			{
+				switch (c)
+				{
+					case '"': quoted.Append("\\\""); break;
+					case '\\': quoted.Append("\\\\"); break;
+					case '\n': quoted.Append("\\n"); break;
+					case '\r': quoted.Append("\\r"); break;
+					case '\t': quoted.Append("\\t"); break;
+					default:
+						if (c < ' ')
+						{
+							quoted.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+						}
+						else
+						{
+							quoted.Append(c);
+						}
+						break;
+				}
+			}
+			quoted.Append('"');
+			return quoted.ToString();
 		}
 
 		#endregion
