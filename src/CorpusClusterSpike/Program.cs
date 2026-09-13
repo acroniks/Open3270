@@ -73,15 +73,6 @@ namespace CorpusClusterSpike
 		static int TitleLeft = -1;
 		static int TitleLength = -1;
 
-		/// <summary>
-		/// Drops the field extent from the signature, leaving position and the protected flag.
-		/// A host that builds a line by concatenation rather than writing into fixed width slots
-		/// puts the following attribute byte at a column that follows the data, so the extent of
-		/// the field before it moves with the account. Dropping it says whether that is the only
-		/// reason two signatures differ - at the cost of some discrimination, which the collision
-		/// count then measures.
-		/// </summary>
-		static bool IgnoreLength;
 
 		/// <summary>
 		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
@@ -104,12 +95,11 @@ namespace CorpusClusterSpike
 				Console.WriteLine("usage: CorpusClusterSpike <corpus-dir> [--out <report-dir>]");
 				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
 				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
-				Console.WriteLine("                          [--title-cols <left> <len>] [--ignore-length]");
+				Console.WriteLine("                          [--title-cols <left> <len>]");
 				return 2;
 			}
 
 			string corpusDir = args[0];
-			IgnoreLength = args.Contains("--ignore-length");
 			string outDir = null;
 			int diffA = -1, diffB = -1;
 			for (int i = 1; i < args.Length - 1; i++)
@@ -399,13 +389,14 @@ namespace CorpusClusterSpike
 			{
 				bool isProtected = field.Attributes != null && field.Attributes.Protected;
 
+				// Location.length is the gap to the next field attribute byte, not the length of
+				// the text in the field. It therefore never varies independently of the following
+				// field's left, which is already in the signature - so it adds no discrimination
+				// that position does not, and removing it would collapse nothing. Measured.
 				signature.Append(field.Location.top).Append(',')
-					.Append(field.Location.left).Append(',');
-				if (!IgnoreLength)
-				{
-					signature.Append(field.Location.length).Append(',');
-				}
-				signature.Append(isProtected ? 'P' : 'u').Append(';');
+					.Append(field.Location.left).Append(',')
+					.Append(field.Location.length).Append(',')
+					.Append(isProtected ? 'P' : 'u').Append(';');
 
 				if (isProtected && !string.IsNullOrEmpty(field.Text))
 				{
@@ -476,11 +467,6 @@ namespace CorpusClusterSpike
 			List<CapturedScreen> formatted = screens.Where(s => s.Formatted).ToList();
 
 			Console.WriteLine("================ corpus ================");
-			if (IgnoreLength)
-			{
-				Console.WriteLine("  signature            position and protected flag only"
-					+ " (--ignore-length)");
-			}
 			Console.WriteLine("  recordings replayed  " + (recordings - failed) + " of " + recordings);
 			Console.WriteLine("  screens captured     " + screens.Count);
 			Console.WriteLine("  distinct targets     " + screens.Select(s => s.Target).Distinct().Count()
@@ -722,14 +708,86 @@ namespace CorpusClusterSpike
 			}
 			else if (onlyLeft.Count == onlyRight.Count)
 			{
-				Console.WriteLine("  Same field count on both sides, different positions or lengths. That is");
-				Console.WriteLine("  a layout difference rather than a conditional field - more likely two");
-				Console.WriteLine("  genuinely different screens, or one screen reached by two paths.");
+				string shifted = DescribeShift(onlyLeft, onlyRight);
+				if (shifted != null)
+				{
+					Console.WriteLine("  " + shifted);
+					Console.WriteLine("  A field changes width and everything after it on the row moves by the");
+					Console.WriteLine("  same amount. The host is building that line by concatenation rather than");
+					Console.WriteLine("  writing into fixed width slots, so the field is host output, not chrome.");
+					Console.WriteLine();
+					Console.WriteLine("  Two consequences. Geometry cannot key this screen - identify it by its");
+					Console.WriteLine("  title instead. And every field after the variable one has no fixed");
+					Console.WriteLine("  coordinates, so its binding has to locate it relative to a label rather");
+					Console.WriteLine("  than at an absolute position.");
+				}
+				else
+				{
+					Console.WriteLine("  Same field count on both sides, different positions or lengths, with no");
+					Console.WriteLine("  consistent shift. More likely two genuinely different screens, or one");
+					Console.WriteLine("  screen reached by two paths.");
+				}
 			}
 
 			Console.WriteLine();
 			Console.WriteLine("  Field tuples read (top,left,length,P|u), P protected and u unprotected.");
 		}
+
+		/// <summary>
+		/// Detects the concatenation fingerprint: on some row, one field changes extent and every
+		/// field after it shifts by that same amount. Returns a description, or null if the two
+		/// sides do not line up that way.
+		/// </summary>
+		static string DescribeShift(List<string> left, List<string> right)
+		{
+			var l = left.Select(Parse).Where(t => t != null).OrderBy(t => t[0]).ThenBy(t => t[1]).ToList();
+			var r = right.Select(Parse).Where(t => t != null).OrderBy(t => t[0]).ThenBy(t => t[1]).ToList();
+
+			if (l.Count == 0 || l.Count != r.Count)
+			{
+				return null;
+			}
+
+			// The pair must start at the same place, then diverge by a constant.
+			if (l[0][0] != r[0][0] || l[0][1] != r[0][1])
+			{
+				return null;
+			}
+
+			int delta = r[0][2] - l[0][2];
+			if (delta == 0)
+			{
+				return null;
+			}
+
+			for (int i = 1; i < l.Count; i++)
+			{
+				if (l[i][0] != r[i][0] || r[i][1] - l[i][1] != delta)
+				{
+					return null;
+				}
+			}
+
+			return "Row " + l[0][0] + ": the field at column " + l[0][1] + " changes width by "
+				+ Math.Abs(delta) + ", and the " + (l.Count - 1)
+				+ " field(s) after it shift by the same " + Math.Abs(delta) + ".";
+		}
+
+		/// <summary>Parses a "top,left,length,P|u" tuple into its three numbers.</summary>
+		static int[] Parse(string tuple)
+		{
+			string[] parts = tuple.Split(',');
+			int top, left, length;
+			if (parts.Length < 4
+				|| !int.TryParse(parts[0], out top)
+				|| !int.TryParse(parts[1], out left)
+				|| !int.TryParse(parts[2], out length))
+			{
+				return null;
+			}
+			return new int[] { top, left, length };
+		}
+
 
 		static void Print(string label, List<string> fields)
 		{
