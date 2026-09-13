@@ -65,6 +65,25 @@ namespace Open3270
 		/// </summary>
 		public event OnDisconnectDelegate Disconnected;
 		public event EventHandler CursorLocationChanged;
+
+		/// <summary>
+		/// Raised once for each screen the host finishes writing, carrying that screen.
+		/// </summary>
+		/// <remarks>
+		/// Intended for observers that must see every screen rather than whichever one happens to
+		/// be current - replaying a recording can produce screens faster than a caller polling
+		/// <see cref="CurrentScreenXML"/> can read them, so a poller silently misses some.
+		/// <para>
+		/// The screen is built while this object's lock is held, so it is definitely the arrival
+		/// being reported, but subscribers are invoked outside that lock. Subscribing is not free:
+		/// it costs a screen build per arrival on the socket receive thread. Nothing is built when
+		/// nothing is subscribed.
+		/// </para>
+		/// <para>
+		/// Handlers run on the receive thread. Keep them short, and do not key anything from one.
+		/// </para>
+		/// </remarks>
+		public event ScreenArrivedDelegate ScreenArrived;
 		OnDisconnectDelegate apiOnDisconnectDelegate = null;
 		#endregion
 
@@ -1045,12 +1064,29 @@ namespace Open3270
 		}
 		private void currentConnection_RunScriptEvent(string where)
 		{
+			ScreenArrivedDelegate handler = this.ScreenArrived;
+			IXMLScreen arrived = null;
+
 			lock (this)
 			{
 				DisposeOfCurrentScreenXML();
 
 				if (sout != null && Debug) sout.WriteLine("mre.Release(1) from location " + where);
 				semaphore.Release(1);
+
+				if (handler != null)
+				{
+					// Built here, under the lock, so it is this arrival's screen and not whatever
+					// has replaced it by the time the handler runs.
+					arrived = this.CurrentScreenXML;
+				}
+			}
+
+			// Invoked outside the lock: a subscriber doing real work must not stall the socket
+			// receive thread behind this object's lock.
+			if (handler != null && arrived != null)
+			{
+				handler(arrived);
 			}
 		}
 		/// <summary>
@@ -1191,4 +1227,10 @@ namespace Open3270
 	}
 
 	public delegate void OnDisconnectDelegate(TNEmulator where, string Reason);
+
+	/// <summary>
+	/// Handler for <see cref="TNEmulator.ScreenArrived"/>.
+	/// </summary>
+	/// <param name="screen">The screen the host just finished writing.</param>
+	public delegate void ScreenArrivedDelegate(IXMLScreen screen);
 }
