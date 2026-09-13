@@ -51,6 +51,10 @@ namespace RecorderRoundTripTest
 				Console.WriteLine();
 				Console.WriteLine("---- 3. the replay branch is not recorded ----");
 				ReplayIsNotRecorded(dir);
+
+				Console.WriteLine();
+				Console.WriteLine("---- 4. a recording survives a process that never disposes ----");
+				DurableWithoutDispose(dir);
 			}
 			finally
 			{
@@ -239,6 +243,83 @@ namespace RecorderRoundTripTest
 			Check(capturing.Tags.Contains("enter"),
 				"the enter action was tagged above the wire, tags seen: ["
 				+ string.Join(", ", capturing.Tags) + "]");
+		}
+
+		#endregion
+
+		#region 4. durable without dispose
+
+		/// <summary>
+		/// Nothing about durability may depend on Dispose being reached: a killed worker never
+		/// reaches it, the GC will not call it, and .NET does not run finalizers at process exit.
+		/// An abandoned recorder must still leave a complete log and a sidecar behind.
+		/// </summary>
+		static void DurableWithoutDispose(string dir)
+		{
+			string path = Path.Combine(dir, "abandoned.log");
+			string sidecar = Path.ChangeExtension(path, ".json");
+
+			Abandon(path);
+
+			// The writer thread is a background thread, so give it a moment to drain rather than
+			// assuming it has - the point of the check is the file, not the timing.
+			bool wrote = WaitFor(delegate
+			{
+				return File.Exists(path) && new FileInfo(path).Length > 0;
+			}, 5000);
+
+			Check(wrote, "the log has content without anyone calling Dispose");
+
+			bool complete = WaitFor(delegate
+			{
+				return File.Exists(path) && File.ReadAllLines(path).Length == 20;
+			}, 5000);
+
+			Check(complete, "all 20 records reached the log, got "
+				+ (File.Exists(path) ? File.ReadAllLines(path).Length : -1));
+
+			Check(WaitFor(delegate { return File.Exists(sidecar); }, 5000),
+				"the sidecar exists without anyone calling Dispose");
+
+			if (File.Exists(sidecar))
+			{
+				Check(File.ReadAllText(sidecar).Contains("\"tag\": \"enter\""),
+					"the sidecar carries the tags recorded before the recorder was abandoned");
+			}
+		}
+
+		/// <summary>Drops a recorder on the floor, exactly as a killed worker would.</summary>
+		static void Abandon(string path)
+		{
+			byte[] data = new byte[] { 0x05, 0xF5, 0xC3, 0x11, 0x40, 0x40 };
+			SessionRecorder recorder = new SessionRecorder(path, null);
+			for (int i = 0; i < 20; i++)
+			{
+				recorder.HostToClient(data, data.Length);
+			}
+			recorder.Keystroke("enter", 0);
+			// No Dispose and no using, deliberately.
+		}
+
+		static bool WaitFor(Func<bool> condition, int timeoutMs)
+		{
+			DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+			while (DateTime.UtcNow < deadline)
+			{
+				try
+				{
+					if (condition())
+					{
+						return true;
+					}
+				}
+				catch (IOException)
+				{
+					// The writer thread may hold the file mid write; try again.
+				}
+				System.Threading.Thread.Sleep(25);
+			}
+			return false;
 		}
 
 		#endregion

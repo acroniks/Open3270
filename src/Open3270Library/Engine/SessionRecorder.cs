@@ -79,6 +79,13 @@ namespace Open3270
 		private bool stopping;
 		private bool disposed;
 
+		/// <summary>
+		/// Set when the sidecar no longer reflects the metadata, cleared once it is rewritten.
+		/// The sidecar is rewritten as the recording goes rather than only on disposal, because
+		/// a recording whose process is killed must still be usable - see the class remarks.
+		/// </summary>
+		private bool sidecarDirty = true;
+
 		#endregion
 
 		#region Constructors
@@ -108,6 +115,10 @@ namespace Open3270
 			}
 			this.metadata.CapturedAtUtc = DateTime.UtcNow;
 
+			// Nothing about durability may depend on Dispose being reached. A worker killed mid
+			// session, an Environment.Exit, or an unhandled exception on another thread all skip
+			// it - the GC will not call it, and .NET does not run finalizers at process exit - so
+			// the log is flushed per line and the sidecar is rewritten as it changes.
 			this.writerThread = new Thread(this.WriterThreadHandler);
 			this.writerThread.Name = "Open3270 session recorder";
 			this.writerThread.IsBackground = true;
@@ -176,6 +187,28 @@ namespace Open3270
 					return;
 				}
 				this.metadata.Keystrokes.Add(entry);
+				this.sidecarDirty = true;
+				Monitor.Pulse(this.sync);
+			}
+		}
+
+
+		/// <summary>
+		/// Marks the sidecar as needing a rewrite, after the caller has changed the metadata it was
+		/// given. Use it once the session is connected and the negotiated geometry is known:
+		/// <c>metadata.Columns = emulator.ScreenColumns</c> cannot be set before <c>Connect</c>,
+		/// and the sidecar should carry it even if the recording is never disposed.
+		/// </summary>
+		public void MetadataChanged()
+		{
+			lock (this.sync)
+			{
+				if (this.disposed)
+				{
+					return;
+				}
+				this.sidecarDirty = true;
+				Monitor.Pulse(this.sync);
 			}
 		}
 
@@ -276,20 +309,33 @@ namespace Open3270
 			{
 				using (StreamWriter writer = new StreamWriter(this.logPath, false))
 				{
+					// Flush per line. The cost is a write syscall per record, on this thread and
+					// never on the socket receive thread, which is the right trade for a file
+					// whose whole purpose is to survive the process that wrote it.
+					writer.AutoFlush = true;
+
 					while (true)
 					{
 						string line = null;
+						bool rewriteSidecar = false;
 
 						lock (this.sync)
 						{
-							while (this.pending.Count == 0 && !this.stopping)
+							while (this.pending.Count == 0 && !this.sidecarDirty && !this.stopping)
 							{
 								Monitor.Wait(this.sync);
 							}
 
 							if (this.pending.Count > 0)
 							{
+								// Bytes first: drain the log before rewriting the sidecar, so a
+								// stopping recorder never leaves queued wire data unwritten.
 								line = this.pending.Dequeue();
+							}
+							else if (this.sidecarDirty)
+							{
+								this.sidecarDirty = false;
+								rewriteSidecar = true;
 							}
 							else
 							{
@@ -297,7 +343,14 @@ namespace Open3270
 							}
 						}
 
-						writer.WriteLine(line);
+						if (line != null)
+						{
+							writer.WriteLine(line);
+						}
+						else if (rewriteSidecar)
+						{
+							this.WriteSidecar();
+						}
 					}
 
 					writer.Flush();
