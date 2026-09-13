@@ -70,6 +70,7 @@ namespace Open3270.TN3270
 		private int logClientFirstDivergenceOffset = -1;
 		private byte logClientFirstDivergenceExpected = 0;
 		private byte logClientFirstDivergenceActual = 0;
+		private bool logClientDivergenceReported = false;
 
 
 		#region Services
@@ -1356,7 +1357,12 @@ namespace Open3270.TN3270
 						this.ReportClientDivergence();
 						// (We are this thread!)
 						this.OnTelnetData(parentData, TNEvent.Disconnect, null);
-						// Close thread.
+
+						// Close thread. Without this the loop spins on a reader that returns null
+						// forever, reprinting the disconnect and re-raising Disconnect on every pass
+						// until the main thread happens to set the quit flag - which only Disconnect()
+						// and the main-thread liveness check ever do.
+						break;
 					}
 					else if (text.Length >= 11)
 					{
@@ -1788,10 +1794,11 @@ namespace Open3270.TN3270
 		/// </summary>
 		private void ReportClientDivergence()
 		{
-			if (this.logClientByteOffset == 0)
+			if (this.logClientByteOffset == 0 || this.logClientDivergenceReported)
 			{
 				return;
 			}
+			this.logClientDivergenceReported = true;
 
 			string summary;
 			if (this.logClientDivergenceCount == 0)
