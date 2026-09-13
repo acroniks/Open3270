@@ -73,6 +73,18 @@ namespace CorpusClusterSpike
 		static int TitleLeft = -1;
 		static int TitleLength = -1;
 
+		/// <summary>
+		/// Rows excluded from the signature and from anchor candidates.
+		/// </summary>
+		/// <remarks>
+		/// A screen with a freeform entry area - a memo someone types into - has field geometry
+		/// there that follows what was typed, so those rows make the signature unstable by design
+		/// rather than by accident. The design already excludes the message line from screen
+		/// identity for the same reason; a user-authored region is the general case of it.
+		/// Declaring the rows here is the same act a binding performs.
+		/// </remarks>
+		static readonly HashSet<int> IgnoredRows = new HashSet<int>();
+
 
 		/// <summary>
 		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
@@ -96,6 +108,7 @@ namespace CorpusClusterSpike
 				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
 				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
 				Console.WriteLine("                          [--title-cols <left> <len>]");
+				Console.WriteLine("                          [--ignore-rows 6-8,22]  excluded from identity");
 				return 2;
 			}
 
@@ -120,6 +133,10 @@ namespace CorpusClusterSpike
 				{
 					int.TryParse(args[i + 1], out TitleLeft);
 					int.TryParse(args[i + 2], out TitleLength);
+				}
+				else if (args[i] == "--ignore-rows")
+				{
+					ParseRows(args[i + 1]);
 				}
 				else if (args[i] == "--title-row")
 				{
@@ -387,6 +404,11 @@ namespace CorpusClusterSpike
 			StringBuilder title = new StringBuilder();
 			foreach (XMLScreenField field in ordered)
 			{
+				if (IgnoredRows.Contains(field.Location.top))
+				{
+					continue;
+				}
+
 				bool isProtected = field.Attributes != null && field.Attributes.Protected;
 
 				// Location.length is the gap to the next field attribute byte, not the length of
@@ -467,6 +489,11 @@ namespace CorpusClusterSpike
 			List<CapturedScreen> formatted = screens.Where(s => s.Formatted).ToList();
 
 			Console.WriteLine("================ corpus ================");
+			if (IgnoredRows.Count > 0)
+			{
+				Console.WriteLine("  rows excluded        " + string.Join(", ",
+					IgnoredRows.OrderBy(r => r)) + "  (--ignore-rows)");
+			}
 			Console.WriteLine("  recordings replayed  " + (recordings - failed) + " of " + recordings);
 			Console.WriteLine("  screens captured     " + screens.Count);
 			Console.WriteLine("  distinct targets     " + screens.Select(s => s.Target).Distinct().Count()
@@ -615,6 +642,7 @@ namespace CorpusClusterSpike
 				}
 			}
 
+			ReportOutliers(ordered);
 			ReportTitles(formatted, ordered);
 			ReportNearMisses(ordered);
 
@@ -773,6 +801,32 @@ namespace CorpusClusterSpike
 				+ " field(s) after it shift by the same " + Math.Abs(delta) + ".";
 		}
 
+		/// <summary>Parses "6-8,22" into the set of rows to exclude.</summary>
+		static void ParseRows(string spec)
+		{
+			foreach (string part in spec.Split(','))
+			{
+				string piece = part.Trim();
+				int dash = piece.IndexOf('-');
+				int single, from, to;
+
+				if (dash > 0
+					&& int.TryParse(piece.Substring(0, dash), out from)
+					&& int.TryParse(piece.Substring(dash + 1), out to))
+				{
+					for (int row = Math.Min(from, to); row <= Math.Max(from, to); row++)
+					{
+						IgnoredRows.Add(row);
+					}
+				}
+				else if (int.TryParse(piece, out single))
+				{
+					IgnoredRows.Add(single);
+				}
+			}
+		}
+
+
 		/// <summary>Parses a "top,left,length,P|u" tuple into its three numbers.</summary>
 		static int[] Parse(string tuple)
 		{
@@ -807,6 +861,98 @@ namespace CorpusClusterSpike
 				Console.WriteLine("    ... and " + (fields.Count - 40) + " more");
 			}
 		}
+
+		/// <summary>
+		/// Reports small clusters that sit a few fields away from a much larger one. A signature
+		/// seen once beside one seen hundreds of times is an anomalous instance of that screen,
+		/// not a screen of its own - and saying so is cheaper than hand-diffing to find out.
+		/// </summary>
+		static void ReportOutliers(List<Cluster> clusters)
+		{
+			if (clusters.Count < 2)
+			{
+				return;
+			}
+
+			List<string> lines = new List<string>();
+
+			foreach (Cluster small in clusters)
+			{
+				// Seen once or twice is the rarity test. There is no relative-size gate: the
+				// search below only compares against strictly larger clusters, so a corpus where
+				// everything is a singleton reports nothing, which is correct.
+				if (small.Members.Count > 2)
+				{
+					continue;
+				}
+
+				HashSet<string> smallFields = new HashSet<string>(
+					small.Signature.Split(';').Where(s => s.Length > 0));
+
+				Cluster nearest = null;
+				int nearestDistance = int.MaxValue;
+
+				foreach (Cluster big in clusters)
+				{
+					if (ReferenceEquals(big, small) || big.Members.Count <= small.Members.Count)
+					{
+						continue;
+					}
+
+					HashSet<string> bigFields = new HashSet<string>(
+						big.Signature.Split(';').Where(s => s.Length > 0));
+
+					int distance = smallFields.Count(f => !bigFields.Contains(f))
+						+ bigFields.Count(f => !smallFields.Contains(f));
+
+					if (distance < nearestDistance)
+					{
+						nearestDistance = distance;
+						nearest = big;
+					}
+				}
+
+				if (nearest == null)
+				{
+					continue;
+				}
+
+				int fields = Math.Max(small.Members[0].FieldCount, 1);
+
+				// A fifth of the fields is the line between "the same screen, drawn oddly" and
+				// "a different screen that happens to resemble it".
+				if (nearestDistance * 5 <= fields)
+				{
+					lines.Add("  [" + (clusters.IndexOf(small) + 1).ToString("D2") + "]  "
+						+ small.Members.Count + " screen(s), differs from ["
+						+ (clusters.IndexOf(nearest) + 1).ToString("D2") + "] ("
+						+ nearest.Members.Count + " screens) by " + nearestDistance
+						+ " of " + fields + " fields");
+				}
+			}
+
+			if (lines.Count == 0)
+			{
+				return;
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("================ outliers ================");
+			Console.WriteLine("  Seen once or twice, and within a fifth of a much larger cluster. These are");
+			Console.WriteLine("  almost certainly anomalous instances of that screen rather than screens of");
+			Console.WriteLine("  their own - one odd account, or a screen caught part way through a write.");
+			Console.WriteLine("  A scored recognizer matches them with a degraded score, which is the point");
+			Console.WriteLine("  of scoring. Do not give them nodes without reading the dump first.");
+			Console.WriteLine();
+			foreach (string line in lines)
+			{
+				Console.WriteLine(line);
+			}
+			Console.WriteLine();
+			Console.WriteLine("  --diff <small> <large> shows exactly which fields, and the dump of a");
+			Console.WriteLine("  single-member cluster is the anomaly itself.");
+		}
+
 
 		/// <summary>
 		/// Compares clustering on geometry against clustering on the title row. Where a system
