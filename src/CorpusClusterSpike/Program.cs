@@ -65,6 +65,15 @@ namespace CorpusClusterSpike
 		static int TitleRow = 0;
 
 		/// <summary>
+		/// Column range of the title, when the title row carries account data as well as chrome.
+		/// Negative means "the whole row", which is only right when the row is chrome throughout.
+		/// Pinning to columns is what a binding does - GetText(x, y, len) at fixed coordinates -
+		/// so setting these is also a rehearsal of the recognizer.
+		/// </summary>
+		static int TitleLeft = -1;
+		static int TitleLength = -1;
+
+		/// <summary>
 		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
 		/// tens of thousands of accounts is one long session, and silently truncating it produces
 		/// a confident answer from a fraction of the corpus.
@@ -85,6 +94,7 @@ namespace CorpusClusterSpike
 				Console.WriteLine("usage: CorpusClusterSpike <corpus-dir> [--out <report-dir>]");
 				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
 				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
+				Console.WriteLine("                          [--title-cols <left> <len>]");
 				return 2;
 			}
 
@@ -104,6 +114,11 @@ namespace CorpusClusterSpike
 					{
 						HardCapMs = seconds * 1000;
 					}
+				}
+				else if (args[i] == "--title-cols" && i + 2 < args.Length)
+				{
+					int.TryParse(args[i + 1], out TitleLeft);
+					int.TryParse(args[i + 2], out TitleLength);
 				}
 				else if (args[i] == "--title-row")
 				{
@@ -406,7 +421,25 @@ namespace CorpusClusterSpike
 			}
 
 			result.Signature = signature.ToString();
-			result.Title = title.ToString();
+
+			if (TitleLeft >= 0 && TitleLength > 0)
+			{
+				// Read it the way a binding would, by coordinates, rather than by walking fields.
+				try
+				{
+					string pinned = screen.GetText(TitleLeft, TitleRow, TitleLength);
+					result.Title = pinned == null ? string.Empty : pinned.Trim();
+				}
+				catch (Exception)
+				{
+					result.Title = string.Empty;
+				}
+			}
+			else
+			{
+				result.Title = title.ToString();
+			}
+
 			return result;
 		}
 
@@ -709,7 +742,9 @@ namespace CorpusClusterSpike
 			var titled = formatted.Where(s => !string.IsNullOrEmpty(s.Title)).ToList();
 
 			Console.WriteLine();
-			Console.WriteLine("================ title row " + TitleRow + " ================");
+			Console.WriteLine("================ title row " + TitleRow
+				+ (TitleLeft >= 0 ? ", columns " + TitleLeft + "-" + (TitleLeft + TitleLength - 1) : ", whole row")
+				+ " ================");
 
 			if (titled.Count == 0)
 			{
@@ -739,8 +774,13 @@ namespace CorpusClusterSpike
 			}
 			else
 			{
-				Console.WriteLine("  More titles than signatures - the title row is picking up data as well as");
-				Console.WriteLine("  chrome. Check whether row " + TitleRow + " carries anything account specific.");
+				Console.WriteLine("  More titles than signatures - the title is picking up data as well as");
+				Console.WriteLine("  chrome, so it is not yet a key. Narrow it with --title-cols <left> <len>");
+				Console.WriteLine("  until the count settles at the number of screens you actually visit.");
+				Console.WriteLine();
+				Console.WriteLine("  The per-cluster anchor candidates below are already the clean version of");
+				Console.WriteLine("  this: protected text present in every member of a cluster and no other.");
+				Console.WriteLine("  Read the top candidate of each cluster to find the columns to pin.");
 			}
 
 			// A title spanning several signatures is the direct evidence. A signature spanning
