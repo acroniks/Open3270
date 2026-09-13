@@ -24,6 +24,13 @@ namespace CorpusClusterSpike
 
 		/// <summary>Protected text on the title row, which on some systems names the screen.</summary>
 		public string Title;
+
+		/// <summary>
+		/// Non-blank rows of an unformatted screen, excluding ignored rows. A screen with no field
+		/// attributes has an empty geometry signature, so its text is the only thing left to
+		/// identify it by - and for a splash or logo screen the text is entirely chrome.
+		/// </summary>
+		public string TextSignature;
 		public int FieldCount;
 
 		/// <summary>Protected, non-empty text with its position - the anchor candidate pool.</summary>
@@ -389,6 +396,7 @@ namespace CorpusClusterSpike
 			if (!result.Formatted)
 			{
 				result.Signature = string.Empty;
+				result.TextSignature = BuildTextSignature(screen);
 				return result;
 			}
 
@@ -471,6 +479,49 @@ namespace CorpusClusterSpike
 		}
 
 		/// <summary>
+		/// Builds a signature from the text of an unformatted screen: its non-blank rows, with
+		/// ignored rows dropped. The message line is what varies on such a screen - an error code
+		/// with a changing digit count, say - so excluding it is what makes the rest stable.
+		/// </summary>
+		static string BuildTextSignature(IXMLScreen screen)
+		{
+			string[] rows;
+			try
+			{
+				rows = screen.GetUnformatedStrings();
+			}
+			catch (Exception)
+			{
+				return string.Empty;
+			}
+
+			if (rows == null)
+			{
+				return string.Empty;
+			}
+
+			StringBuilder text = new StringBuilder();
+			for (int row = 0; row < rows.Length; row++)
+			{
+				if (IgnoredRows.Contains(row) || string.IsNullOrEmpty(rows[row]))
+				{
+					continue;
+				}
+
+				string trimmed = rows[row].TrimEnd();
+				if (trimmed.Length == 0)
+				{
+					continue;
+				}
+
+				text.Append(row).Append(':').Append(trimmed).Append('\n');
+			}
+
+			return text.ToString();
+		}
+
+
+		/// <summary>
 		/// The nav field sits at the top left and cannot identify anything - it is an echo of what
 		/// was typed, and its protected parts appear on every screen. No node may anchor there.
 		/// </summary>
@@ -511,7 +562,49 @@ namespace CorpusClusterSpike
 			{
 				Console.WriteLine();
 				Console.WriteLine("  unformatted screens  " + unformatted.Count
-					+ " - segregated before clustering, since an empty signature would collide them all");
+					+ " - no field attributes, so geometry cannot tell them apart");
+
+				var byText = unformatted
+					.GroupBy(s => s.TextSignature ?? string.Empty)
+					.OrderByDescending(g => g.Count())
+					.ToList();
+
+				Console.WriteLine("  distinct by text     " + byText.Count
+					+ " - clustered on their rows instead, ignored rows dropped");
+
+				int n = 0;
+				foreach (var group in byText.Take(12))
+				{
+					n++;
+					string first = (group.Key ?? string.Empty)
+						.Split('\n')
+						.FirstOrDefault(l => l.Length > 0) ?? "(blank)";
+					int colon = first.IndexOf(':');
+					if (colon >= 0 && colon + 1 < first.Length)
+					{
+						first = "row " + first.Substring(0, colon) + "  " + first.Substring(colon + 1).Trim();
+					}
+					if (first.Length > 66)
+					{
+						first = first.Substring(0, 66) + "...";
+					}
+					Console.WriteLine("    u" + n.ToString("D2") + "  " + group.Count()
+						+ " screen(s)   " + first);
+				}
+
+				if (byText.Count > 12)
+				{
+					Console.WriteLine("    ... and " + (byText.Count - 12) + " more");
+				}
+
+				if (byText.Count > 1 || unformatted.Count > 1)
+				{
+					Console.WriteLine();
+					Console.WriteLine("  These are nodes like any other - a splash or logo screen identifies by");
+					Console.WriteLine("  its text, which on such a screen is entirely chrome. If two rows apart");
+					Console.WriteLine("  should be identical but are not, the varying row is data: add it to");
+					Console.WriteLine("  --ignore-rows and they will merge.");
+				}
 			}
 
 			// Cluster on exact signature match.
