@@ -232,6 +232,15 @@ namespace Open3270.TN3270
 				throw new Open3270.TNHostException("TN3270 Host is not connected", telnet.DisconnectReason, null);
 			}
 
+			// Tag the action for any recorder, above the wire rather than at it. Tagging at
+			// SendRawOutput would only ever recover bytes, which the log already has. The text of a
+			// string action is deliberately not passed on - the text is the data.
+			ISessionRecorder recorder = this.telnet.Recorder;
+			if (recorder != null)
+			{
+				recorder.Keystroke(BuildKeystrokeTag(name, args), KeystrokeLength(name, args));
+			}
+
 			datacapture = null;
 			datastringcapture = null;
 			XtActionRec rec = actionLookup[name.ToLower()] as XtActionRec;
@@ -250,6 +259,50 @@ namespace Open3270.TN3270
 			}
 			throw new ApplicationException("Sorry, action '" + name + "' is not known");
 
+		}
+
+
+		/// <summary>
+		/// The tag a recorder sees for an action. PF and PA keys carry their number in the tag, so a
+		/// recording reads "pf3" rather than "pf" with an argument, which is what makes the tag
+		/// stream legible on its own.
+		/// </summary>
+		private static string BuildKeystrokeTag(string name, object[] args)
+		{
+			string tag = name.ToLower();
+
+			if ((tag == "pf" || tag == "pa") && args != null && args.Length > 0 && args[0] != null)
+			{
+				tag += Convert.ToString(args[0]).Trim();
+			}
+
+			return tag;
+		}
+
+
+		/// <summary>
+		/// How many characters an action carried, for actions that carry text. Zero for everything
+		/// else. The count is recorded; the text never is.
+		/// </summary>
+		private static int KeystrokeLength(string name, object[] args)
+		{
+			string tag = name.ToLower();
+
+			if (tag != "string" && tag != "text" && tag != "fieldset")
+			{
+				return 0;
+			}
+
+			int length = 0;
+			for (int i = 0; i < (args == null ? 0 : args.Length); i++)
+			{
+				string text = args[i] as string;
+				if (text != null)
+				{
+					length += text.Length;
+				}
+			}
+			return length;
 		}
 
 

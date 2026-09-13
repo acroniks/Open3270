@@ -518,6 +518,22 @@ namespace Open3270.TN3270
                 return this.tn.Controller.BuildXMLScreen();
             }
         }
+        /// <summary>
+        /// Rows in the negotiated screen geometry, or zero when not connected.
+        /// </summary>
+        public int ScreenRows
+        {
+            get { return this.tn == null ? 0 : this.tn.Controller.RowCount; }
+        }
+
+        /// <summary>
+        /// Columns in the negotiated screen geometry, or zero when not connected.
+        /// </summary>
+        public int ScreenColumns
+        {
+            get { return this.tn == null ? 0 : this.tn.Controller.ColumnCount; }
+        }
+
         public bool KeyboardCommandCausesSubmit(string name)
         {
             return this.tn.Action.KeyboardCommandCausesSubmit(name);

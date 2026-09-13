@@ -47,6 +47,7 @@ namespace Open3270
 		}
 		private bool fastScreenMode = false;
 		private StreamReader logFile = null;
+		private ISessionRecorder recordTo = null;
 		private bool ignoreSequenceCount = false;
 		private bool identificationEngineOn = false;
 		private bool alwaysSkipToUnprotected = true;
@@ -188,6 +189,25 @@ namespace Open3270
 		{
 			get { return logFile; }
 			set { logFile = value; }
+		}
+
+		/// <summary>
+		/// Receives the raw wire bytes of the session in both directions, so that it can be replayed
+		/// later through <see cref="LogFile"/>. Null, the default, records nothing.
+		/// </summary>
+		/// <remarks>
+		/// This is the write counterpart to <see cref="LogFile"/>. Setting it does not change how the
+		/// session behaves - a recorder is passive, and if enabling one changes behaviour that is a bug
+		/// in the recorder.
+		/// <para>
+		/// A recording holds live screen content and everything keyed into the session, including text
+		/// typed into non-display fields. Point this at a store you are willing to have that in.
+		/// </para>
+		/// </remarks>
+		public ISessionRecorder RecordTo
+		{
+			get { return recordTo; }
+			set { recordTo = value; }
 		}
 
 		/// <summary>

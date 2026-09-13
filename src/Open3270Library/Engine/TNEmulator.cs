@@ -85,6 +85,39 @@ namespace Open3270
 		/// <summary>
 		/// Returns whether or not this session is connected to the mainframe.
 		/// </summary>
+		/// <summary>
+		/// Rows in the negotiated screen geometry, or zero when not connected.
+		/// </summary>
+		/// <remarks>
+		/// This is the negotiated size, taken from the model the host and client agreed on - 24, 32,
+		/// 43 or 27 rows for models 2 to 5. It is deliberately not the same as
+		/// <see cref="IXMLScreen.CY"/>, which is floored at 25 rows and 80 columns and so reports 25
+		/// for a 24 row model 2. Anything recording the geometry of a session wants this, not that.
+		/// </remarks>
+		public int ScreenRows
+		{
+			get
+			{
+				if (this.currentConnection == null)
+					return 0;
+				return this.currentConnection.ScreenRows;
+			}
+		}
+
+		/// <summary>
+		/// Columns in the negotiated screen geometry, or zero when not connected. See
+		/// <see cref="ScreenRows"/> for why this is not <see cref="IXMLScreen.CX"/>.
+		/// </summary>
+		public int ScreenColumns
+		{
+			get
+			{
+				if (this.currentConnection == null)
+					return 0;
+				return this.currentConnection.ScreenColumns;
+			}
+		}
+
 		public bool IsConnected
 		{
 			get

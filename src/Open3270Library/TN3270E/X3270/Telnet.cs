@@ -60,6 +60,17 @@ namespace Open3270.TN3270
 		TN3270API telnetApi = null;
 		ConnectionConfig connectionConfig = null;
 
+		// Client byte divergence accounting for log file replay. A recording carries what the client
+		// sent as well as what the host did, so replaying one checks that automation still keys the
+		// same bytes. Divergence is counted rather than fatal: a replay runs offline against a
+		// recording, so it cannot protect live data, and failing the run would only stop the rest of
+		// the regression from reporting.
+		private int logClientByteOffset = 0;
+		private int logClientDivergenceCount = 0;
+		private int logClientFirstDivergenceOffset = -1;
+		private byte logClientFirstDivergenceExpected = 0;
+		private byte logClientFirstDivergenceActual = 0;
+
 
 		#region Services
 
@@ -371,6 +382,16 @@ namespace Open3270.TN3270
 
 
 		#region Ctors, Dtors, clean-up
+
+		/// <summary>
+		/// The session recorder, or null when nothing is recording. Read through the config every time
+		/// rather than cached, so that a recorder attached after connect is picked up.
+		/// </summary>
+		internal ISessionRecorder Recorder
+		{
+			get { return this.connectionConfig == null ? null : this.connectionConfig.RecordTo; }
+		}
+
 
 		public Telnet(TN3270API api, IAudit audit, ConnectionConfig config)
 		{
@@ -1332,6 +1353,7 @@ namespace Open3270.TN3270
 						// If no data was received then the connection is probably dead
 
 						Console.WriteLine("Disconnected from log file");
+						this.ReportClientDivergence();
 						// (We are this thread!)
 						this.OnTelnetData(parentData, TNEvent.Disconnect, null);
 						// Close thread.
@@ -1393,8 +1415,26 @@ namespace Open3270.TN3270
 								}
 								if (v != netoutbyte)
 								{
-									Console.WriteLine("**BUGBUG** " + String.Format("oops - byte is not the same as client buffer. Read {0:x2}'{2}' netout {1:x2}'{3}'", v, netoutbyte, System.Convert.ToChar(Tables.Ebc2Ascii[v]), System.Convert.ToChar(Tables.Ebc2Ascii[netoutbyte])));
+									this.logClientDivergenceCount++;
+									if (this.logClientFirstDivergenceOffset < 0)
+									{
+										this.logClientFirstDivergenceOffset = this.logClientByteOffset;
+										this.logClientFirstDivergenceExpected = v;
+										this.logClientFirstDivergenceActual = netoutbyte;
+
+										// Report the first divergence in full and count the rest. Once the
+										// client stream has diverged every later byte is suspect, so printing
+										// all of them buries the offset that actually matters.
+										string first = String.Format(
+											"Client byte divergence at offset {0}: recording has {1:x2} '{2}', emulator sent {3:x2} '{4}'",
+											this.logClientByteOffset,
+											v, System.Convert.ToChar(Tables.Ebc2Ascii[v]),
+											netoutbyte, System.Convert.ToChar(Tables.Ebc2Ascii[netoutbyte]));
+										trace.WriteLine(first);
+										Console.WriteLine(first);
+									}
 								}
+								this.logClientByteOffset++;
 								while (!logFileProcessorThread_Quit)
 								{
 									if (logFileSemaphore.Acquire(1000))
@@ -1561,6 +1601,17 @@ namespace Open3270.TN3270
 						trace.trace_netdata('<', byteBuffer, nBytesRec);
 						bytesReceived += nBytesRec;
 
+						// Tee to the recorder before the state machine consumes the buffer. Outside the
+						// lock below, and the recorder must not block: this is the socket receive thread,
+						// and stalling it here would stall ingest for the whole session.
+						{
+							ISessionRecorder recorder = this.Recorder;
+							if (recorder != null)
+							{
+								recorder.HostToClient(byteBuffer, nBytesRec);
+							}
+						}
+
 						int i;
 
 						if (showParseError)
@@ -1716,8 +1767,51 @@ namespace Open3270.TN3270
 			else
 			{
 				trace.trace_netdata('>', smkBuffer, length);
+
+				// Only this branch is recorded. The branch above is replay, and recording a replay
+				// would just write the recording back out again.
+				ISessionRecorder recorder = this.Recorder;
+				if (recorder != null)
+				{
+					recorder.ClientToHost(smkBuffer, length);
+				}
+
 				this.socketStream.Write(smkBuffer, 0, length);
 			}
+		}
+
+
+		/// <summary>
+		/// Summarises how far the client byte stream diverged from the recording. Called once, when
+		/// the recording runs out. Non-fatal by design - a replay runs offline, so it cannot protect
+		/// live data, and a hard failure here would stop the rest of a regression run reporting.
+		/// </summary>
+		private void ReportClientDivergence()
+		{
+			if (this.logClientByteOffset == 0)
+			{
+				return;
+			}
+
+			string summary;
+			if (this.logClientDivergenceCount == 0)
+			{
+				summary = String.Format("Client bytes matched the recording: {0} compared, 0 divergent",
+					this.logClientByteOffset);
+			}
+			else
+			{
+				summary = String.Format(
+					"Client bytes diverged from the recording: {0} compared, {1} divergent, first at offset {2} (recording {3:x2}, emulator {4:x2})",
+					this.logClientByteOffset,
+					this.logClientDivergenceCount,
+					this.logClientFirstDivergenceOffset,
+					this.logClientFirstDivergenceExpected,
+					this.logClientFirstDivergenceActual);
+			}
+
+			trace.WriteLine(summary);
+			Console.WriteLine(summary);
 		}
 
 
