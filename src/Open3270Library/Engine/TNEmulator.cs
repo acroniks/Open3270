@@ -122,9 +122,8 @@ namespace Open3270
 		{
 			get
 			{
-				if (this.currentConnection == null)
-					return 0;
-				return this.currentConnection.ClientBytesCompared;
+				this.SnapshotReplayCounters();
+				return this.lastClientBytesCompared;
 			}
 		}
 
@@ -136,9 +135,8 @@ namespace Open3270
 		{
 			get
 			{
-				if (this.currentConnection == null)
-					return 0;
-				return this.currentConnection.ClientByteDivergences;
+				this.SnapshotReplayCounters();
+				return this.lastClientByteDivergences;
 			}
 		}
 
@@ -149,10 +147,33 @@ namespace Open3270
 		{
 			get
 			{
-				if (this.currentConnection == null)
-					return -1;
-				return this.currentConnection.FirstClientByteDivergence;
+				this.SnapshotReplayCounters();
+				return this.lastFirstClientByteDivergence;
 			}
+		}
+
+
+		private int lastClientBytesCompared;
+		private int lastClientByteDivergences;
+		private int lastFirstClientByteDivergence = -1;
+
+		/// <summary>
+		/// Copies the replay counters out of the connection while one exists, so that reading them
+		/// after Close still reports the run that just finished. Close nulls the connection, and a
+		/// comparison result that silently became zero the moment the session ended would be read
+		/// as "everything matched" when it means "nothing was measured".
+		/// </summary>
+		private void SnapshotReplayCounters()
+		{
+			TN3270API connection = this.currentConnection;
+			if (connection == null)
+			{
+				return;
+			}
+
+			this.lastClientBytesCompared = connection.ClientBytesCompared;
+			this.lastClientByteDivergences = connection.ClientByteDivergences;
+			this.lastFirstClientByteDivergence = connection.FirstClientByteDivergence;
 		}
 
 		/// <summary>
@@ -831,6 +852,7 @@ namespace Open3270
 		{
 			if (currentConnection != null)
 			{
+				this.SnapshotReplayCounters();
 				currentConnection.Disconnect();
 				currentConnection = null;
 			}

@@ -551,11 +551,14 @@ namespace RecorderRoundTripTest
 					return stable;
 				}, 8000);
 
+				// Read AFTER Close, deliberately. Close nulls the connection, and a counter that
+				// silently became zero at that moment would read as "everything matched" when it
+				// means "nothing was measured" - which is exactly how this was first missed.
+				emulator.Close();
+
 				compared = emulator.ClientBytesCompared;
 				divergences = emulator.ClientByteDivergences;
 				firstAt = emulator.FirstClientByteDivergence;
-
-				emulator.Close();
 			}
 		}
 
