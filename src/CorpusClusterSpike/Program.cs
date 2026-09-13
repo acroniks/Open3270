@@ -74,6 +74,16 @@ namespace CorpusClusterSpike
 		static int TitleLength = -1;
 
 		/// <summary>
+		/// Drops the field extent from the signature, leaving position and the protected flag.
+		/// A host that builds a line by concatenation rather than writing into fixed width slots
+		/// puts the following attribute byte at a column that follows the data, so the extent of
+		/// the field before it moves with the account. Dropping it says whether that is the only
+		/// reason two signatures differ - at the cost of some discrimination, which the collision
+		/// count then measures.
+		/// </summary>
+		static bool IgnoreLength;
+
+		/// <summary>
 		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
 		/// tens of thousands of accounts is one long session, and silently truncating it produces
 		/// a confident answer from a fraction of the corpus.
@@ -94,11 +104,12 @@ namespace CorpusClusterSpike
 				Console.WriteLine("usage: CorpusClusterSpike <corpus-dir> [--out <report-dir>]");
 				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
 				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
-				Console.WriteLine("                          [--title-cols <left> <len>]");
+				Console.WriteLine("                          [--title-cols <left> <len>] [--ignore-length]");
 				return 2;
 			}
 
 			string corpusDir = args[0];
+			IgnoreLength = args.Contains("--ignore-length");
 			string outDir = null;
 			int diffA = -1, diffB = -1;
 			for (int i = 1; i < args.Length - 1; i++)
@@ -389,9 +400,12 @@ namespace CorpusClusterSpike
 				bool isProtected = field.Attributes != null && field.Attributes.Protected;
 
 				signature.Append(field.Location.top).Append(',')
-					.Append(field.Location.left).Append(',')
-					.Append(field.Location.length).Append(',')
-					.Append(isProtected ? 'P' : 'u').Append(';');
+					.Append(field.Location.left).Append(',');
+				if (!IgnoreLength)
+				{
+					signature.Append(field.Location.length).Append(',');
+				}
+				signature.Append(isProtected ? 'P' : 'u').Append(';');
 
 				if (isProtected && !string.IsNullOrEmpty(field.Text))
 				{
@@ -462,6 +476,11 @@ namespace CorpusClusterSpike
 			List<CapturedScreen> formatted = screens.Where(s => s.Formatted).ToList();
 
 			Console.WriteLine("================ corpus ================");
+			if (IgnoreLength)
+			{
+				Console.WriteLine("  signature            position and protected flag only"
+					+ " (--ignore-length)");
+			}
 			Console.WriteLine("  recordings replayed  " + (recordings - failed) + " of " + recordings);
 			Console.WriteLine("  screens captured     " + screens.Count);
 			Console.WriteLine("  distinct targets     " + screens.Select(s => s.Target).Distinct().Count()
