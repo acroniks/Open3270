@@ -56,24 +56,50 @@ namespace CorpusClusterSpike
 		const int QuietMs = 1200;
 		const int QuietPollMs = 100;
 
-		/// <summary>Upper bound per recording, however busy it is.</summary>
-		const int HardCapMs = 120000;
+		/// <summary>
+		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
+		/// tens of thousands of accounts is one long session, and silently truncating it produces
+		/// a confident answer from a fraction of the corpus.
+		/// </summary>
+		static int HardCapMs = 3600000;
+
+		/// <summary>
+		/// Dumps kept per distinct signature. A dump is the whole rendered screen, so keeping one
+		/// per screen costs hundreds of megabytes on a large corpus - and the second and later
+		/// examples of a signature add nothing a human will read.
+		/// </summary>
+		const int DumpsPerSignature = 3;
 
 		static int Main(string[] args)
 		{
 			if (args.Length < 1)
 			{
 				Console.WriteLine("usage: CorpusClusterSpike <corpus-dir> [--out <report-dir>]");
+				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
 				return 2;
 			}
 
 			string corpusDir = args[0];
 			string outDir = null;
+			int diffA = -1, diffB = -1;
 			for (int i = 1; i < args.Length - 1; i++)
 			{
 				if (args[i] == "--out")
 				{
 					outDir = args[i + 1];
+				}
+				else if (args[i] == "--max-seconds")
+				{
+					int seconds;
+					if (int.TryParse(args[i + 1], out seconds) && seconds > 0)
+					{
+						HardCapMs = seconds * 1000;
+					}
+				}
+				else if (args[i] == "--diff" && i + 2 < args.Length)
+				{
+					int.TryParse(args[i + 1], out diffA);
+					int.TryParse(args[i + 2], out diffB);
 				}
 			}
 
@@ -126,7 +152,13 @@ namespace CorpusClusterSpike
 			}
 
 			Console.WriteLine();
-			Report(screens, logs.Length, failed, outDir);
+			List<Cluster> clusters = Report(screens, logs.Length, failed, outDir);
+
+			if (diffA > 0 && diffB > 0)
+			{
+				DiffClusters(clusters, diffA, diffB);
+			}
+
 			return 0;
 		}
 
@@ -135,6 +167,9 @@ namespace CorpusClusterSpike
 		/// <summary>
 		/// Replays one recording and collects every screen the host drew.
 		/// </summary>
+		static bool truncated;
+		static readonly Dictionary<string, int> dumpsKept = new Dictionary<string, int>();
+
 		static void Replay(string logPath, string workDir, List<CapturedScreen> into)
 		{
 			string recordingId = Path.GetFileNameWithoutExtension(logPath);
@@ -167,6 +202,20 @@ namespace CorpusClusterSpike
 					lock (gate)
 					{
 						snapshot = Reduce(screen, recordingId, target, captured.Count, cx, cy);
+
+						// Keep only the first few dumps per signature. On a bulk scrape this is
+						// the difference between a few megabytes and a few hundred.
+						int seen;
+						dumpsKept.TryGetValue(snapshot.Signature, out seen);
+						if (seen >= DumpsPerSignature)
+						{
+							snapshot.Dump = null;
+						}
+						else
+						{
+							dumpsKept[snapshot.Signature] = seen + 1;
+						}
+
 						captured.Add(snapshot);
 						lastArrival = DateTime.UtcNow.Ticks;
 					}
@@ -175,6 +224,7 @@ namespace CorpusClusterSpike
 				emulator.Connect();
 
 				DateTime deadline = DateTime.UtcNow.AddMilliseconds(HardCapMs);
+				bool quiet = false;
 				while (DateTime.UtcNow < deadline)
 				{
 					Thread.Sleep(QuietPollMs);
@@ -187,8 +237,19 @@ namespace CorpusClusterSpike
 
 					if (idleMs >= QuietMs)
 					{
+						quiet = true;
 						break;
 					}
+				}
+
+				if (!quiet)
+				{
+					// Loudly, because the alternative is a confident verdict drawn from however
+					// much of the recording happened to fit inside the cap.
+					truncated = true;
+					Console.WriteLine("    *** TRUNCATED at " + (HardCapMs / 1000) + "s with "
+						+ captured.Count + " screen(s) captured - the recording was still"
+						+ " producing screens. Raise --max-seconds; this replay is incomplete.");
 				}
 
 				emulator.Close();
@@ -330,7 +391,7 @@ namespace CorpusClusterSpike
 
 		#region report
 
-		static void Report(List<CapturedScreen> screens, int recordings, int failed, string outDir)
+		static List<Cluster> Report(List<CapturedScreen> screens, int recordings, int failed, string outDir)
 		{
 			List<CapturedScreen> unformatted = screens.Where(s => !s.Formatted).ToList();
 			List<CapturedScreen> formatted = screens.Where(s => s.Formatted).ToList();
@@ -488,6 +549,14 @@ namespace CorpusClusterSpike
 					+ " - these are phase 02's expensive screens");
 			}
 
+			if (truncated)
+			{
+				Console.WriteLine();
+				Console.WriteLine("  *** At least one replay was TRUNCATED. Everything above is drawn from a");
+				Console.WriteLine("      fraction of the corpus. Re-run with a larger --max-seconds before");
+				Console.WriteLine("      drawing any conclusion from these counts.");
+			}
+
 			if (outDir != null)
 			{
 				WriteDumps(ordered, unformatted, outDir);
@@ -495,7 +564,96 @@ namespace CorpusClusterSpike
 			else
 			{
 				Console.WriteLine();
-				Console.WriteLine("  Pass --out <dir> to write one dump per cluster for eyeballing.");
+				Console.WriteLine("  Pass --out <dir> to write one dump per cluster for eyeballing,");
+				Console.WriteLine("  or --diff <a> <b> to see exactly which fields two clusters differ by.");
+			}
+
+			return ordered;
+		}
+
+
+		/// <summary>
+		/// Reports exactly which field tuples two clusters differ by. Two signatures for what looks
+		/// like one screen is H1 failing for that screen, and the useful question is not that they
+		/// differ but which fields do - a repeating block is a variable-height region, a single
+		/// field appearing or vanishing is a conditional one.
+		/// </summary>
+		static void DiffClusters(List<Cluster> clusters, int a, int b)
+		{
+			if (a > clusters.Count || b > clusters.Count)
+			{
+				Console.WriteLine();
+				Console.WriteLine("  --diff: no such cluster (there are " + clusters.Count + ")");
+				return;
+			}
+
+			Cluster left = clusters[a - 1];
+			Cluster right = clusters[b - 1];
+
+			List<string> lf = left.Signature.Split(';').Where(s => s.Length > 0).ToList();
+			List<string> rf = right.Signature.Split(';').Where(s => s.Length > 0).ToList();
+
+			Console.WriteLine();
+			Console.WriteLine("================ diff [" + a.ToString("D2") + "] vs ["
+				+ b.ToString("D2") + "] ================");
+			Console.WriteLine("  [" + a.ToString("D2") + "]  " + lf.Count + " fields, "
+				+ left.Members.Count + " screen(s)");
+			Console.WriteLine("  [" + b.ToString("D2") + "]  " + rf.Count + " fields, "
+				+ right.Members.Count + " screen(s)");
+
+			HashSet<string> inLeft = new HashSet<string>(lf);
+			HashSet<string> inRight = new HashSet<string>(rf);
+
+			List<string> onlyLeft = lf.Where(f => !inRight.Contains(f)).ToList();
+			List<string> onlyRight = rf.Where(f => !inLeft.Contains(f)).ToList();
+
+			Console.WriteLine();
+			Console.WriteLine("  fields in common               " + lf.Count(f => inRight.Contains(f)));
+			Console.WriteLine("  only in [" + a.ToString("D2") + "]                  " + onlyLeft.Count);
+			Console.WriteLine("  only in [" + b.ToString("D2") + "]                  " + onlyRight.Count);
+
+			Print("only in [" + a.ToString("D2") + "]", onlyLeft);
+			Print("only in [" + b.ToString("D2") + "]", onlyRight);
+
+			Console.WriteLine();
+			if (onlyLeft.Count == 0 && onlyRight.Count > 0)
+			{
+				Console.WriteLine("  [" + a.ToString("D2") + "] is a strict subset of ["
+					+ b.ToString("D2") + "]. Fields are added, never moved - a region that grows");
+				Console.WriteLine("  with the data, or a conditional field that is sometimes absent.");
+			}
+			else if (onlyRight.Count == 0 && onlyLeft.Count > 0)
+			{
+				Console.WriteLine("  [" + b.ToString("D2") + "] is a strict subset of ["
+					+ a.ToString("D2") + "]. See above, the other way round.");
+			}
+			else if (onlyLeft.Count == onlyRight.Count)
+			{
+				Console.WriteLine("  Same field count on both sides, different positions or lengths. That is");
+				Console.WriteLine("  a layout difference rather than a conditional field - more likely two");
+				Console.WriteLine("  genuinely different screens, or one screen reached by two paths.");
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("  Field tuples read (top,left,length,P|u), P protected and u unprotected.");
+		}
+
+		static void Print(string label, List<string> fields)
+		{
+			if (fields.Count == 0)
+			{
+				return;
+			}
+
+			Console.WriteLine();
+			Console.WriteLine("  " + label + ":");
+			foreach (string field in fields.Take(40))
+			{
+				Console.WriteLine("    " + field);
+			}
+			if (fields.Count > 40)
+			{
+				Console.WriteLine("    ... and " + (fields.Count - 40) + " more");
 			}
 		}
 
