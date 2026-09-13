@@ -21,6 +21,9 @@ namespace CorpusClusterSpike
 		public bool GeometryFromSidecar;
 		public bool Formatted;
 		public string Signature;
+
+		/// <summary>Protected text on the title row, which on some systems names the screen.</summary>
+		public string Title;
 		public int FieldCount;
 
 		/// <summary>Protected, non-empty text with its position - the anchor candidate pool.</summary>
@@ -57,6 +60,11 @@ namespace CorpusClusterSpike
 		const int QuietPollMs = 100;
 
 		/// <summary>
+		/// Row whose protected text is treated as the screen's title. Zero based.
+		/// </summary>
+		static int TitleRow = 0;
+
+		/// <summary>
 		/// Upper bound per recording, however busy it is. Generous by default: a bulk scrape of
 		/// tens of thousands of accounts is one long session, and silently truncating it produces
 		/// a confident answer from a fraction of the corpus.
@@ -76,6 +84,7 @@ namespace CorpusClusterSpike
 			{
 				Console.WriteLine("usage: CorpusClusterSpike <corpus-dir> [--out <report-dir>]");
 				Console.WriteLine("                          [--max-seconds <n>] [--diff <a> <b>]");
+				Console.WriteLine("                          [--title-row <n>]   (0 based, default 0)");
 				return 2;
 			}
 
@@ -94,6 +103,14 @@ namespace CorpusClusterSpike
 					if (int.TryParse(args[i + 1], out seconds) && seconds > 0)
 					{
 						HardCapMs = seconds * 1000;
+					}
+				}
+				else if (args[i] == "--title-row")
+				{
+					int row;
+					if (int.TryParse(args[i + 1], out row) && row >= 0)
+					{
+						TitleRow = row;
 					}
 				}
 				else if (args[i] == "--diff" && i + 2 < args.Length)
@@ -351,6 +368,7 @@ namespace CorpusClusterSpike
 				.ToList();
 
 			StringBuilder signature = new StringBuilder();
+			StringBuilder title = new StringBuilder();
 			foreach (XMLScreenField field in ordered)
 			{
 				bool isProtected = field.Attributes != null && field.Attributes.Protected;
@@ -363,18 +381,32 @@ namespace CorpusClusterSpike
 				if (isProtected && !string.IsNullOrEmpty(field.Text))
 				{
 					string text = field.Text.Trim();
-					if (text.Length > 0 && !IsNavField(field.Location.top, field.Location.left))
+					if (text.Length > 0)
 					{
-						Anchor anchor = new Anchor();
-						anchor.Text = text;
-						anchor.Top = field.Location.top;
-						anchor.Left = field.Location.left;
-						result.ProtectedText.Add(anchor);
+						// The title is whatever protected text sits on the title row. Deliberately
+						// not filtered by the nav-field rule below: that rule is about what may
+						// serve as an anchor, and a screen that names itself on the same row as
+						// the nav field still names itself. Any constant nav-field text picked up
+						// here is constant everywhere, so it does not affect the grouping.
+						if (field.Location.top == TitleRow)
+						{
+							title.Append(title.Length > 0 ? " " : "").Append(text);
+						}
+
+						if (!IsNavField(field.Location.top, field.Location.left))
+						{
+							Anchor anchor = new Anchor();
+							anchor.Text = text;
+							anchor.Top = field.Location.top;
+							anchor.Left = field.Location.left;
+							result.ProtectedText.Add(anchor);
+						}
 					}
 				}
 			}
 
 			result.Signature = signature.ToString();
+			result.Title = title.ToString();
 			return result;
 		}
 
@@ -513,9 +545,17 @@ namespace CorpusClusterSpike
 				var targets = cluster.Members.Select(m => m.Target).Distinct().ToList();
 
 				Console.WriteLine();
+				string title = cluster.Members
+					.Select(m => m.Title)
+					.FirstOrDefault(t => !string.IsNullOrEmpty(t));
+
 				Console.WriteLine("  [" + shown.ToString("D2") + "]  " + cluster.Members.Count
 					+ " screen(s), " + cluster.Members[0].FieldCount + " fields, "
 					+ recs.Count + " recording(s), targets: " + string.Join(", ", targets));
+				if (!string.IsNullOrEmpty(title))
+				{
+					Console.WriteLine("        title: \"" + title + "\"");
+				}
 
 				if (recs.Count == 1 && cluster.Members.Count == 1)
 				{
@@ -537,6 +577,7 @@ namespace CorpusClusterSpike
 				}
 			}
 
+			ReportTitles(formatted, ordered);
 			ReportNearMisses(ordered);
 
 			int anchorless = ordered.Count(c => c.Candidates.Count == 0);
@@ -656,6 +697,90 @@ namespace CorpusClusterSpike
 				Console.WriteLine("    ... and " + (fields.Count - 40) + " more");
 			}
 		}
+
+		/// <summary>
+		/// Compares clustering on geometry against clustering on the title row. Where a system
+		/// names its screens in protected text, the title is both a cheaper and a more reliable
+		/// key than a geometry hash - geometry that moves with the account makes a bucket lookup
+		/// miss, whereas a title at fixed coordinates does not move at all.
+		/// </summary>
+		static void ReportTitles(List<CapturedScreen> formatted, List<Cluster> clusters)
+		{
+			var titled = formatted.Where(s => !string.IsNullOrEmpty(s.Title)).ToList();
+
+			Console.WriteLine();
+			Console.WriteLine("================ title row " + TitleRow + " ================");
+
+			if (titled.Count == 0)
+			{
+				Console.WriteLine("  No protected text on row " + TitleRow
+					+ ". Try --title-row with another row.");
+				return;
+			}
+
+			var byTitle = titled.GroupBy(s => s.Title).OrderByDescending(g => g.Count()).ToList();
+
+			Console.WriteLine("  screens with a title   " + titled.Count + " of " + formatted.Count);
+			Console.WriteLine("  distinct titles        " + byTitle.Count);
+			Console.WriteLine("  distinct signatures    " + clusters.Count);
+			Console.WriteLine();
+
+			if (byTitle.Count < clusters.Count)
+			{
+				Console.WriteLine("  The title collapses " + clusters.Count + " geometry clusters into "
+					+ byTitle.Count + " screens. Geometry is");
+				Console.WriteLine("  splitting screens that the title keeps together, which is H1 failing and");
+				Console.WriteLine("  the title surviving. Prefer the title as the identification key and keep");
+				Console.WriteLine("  geometry as a weak corroborating signal only.");
+			}
+			else if (byTitle.Count == clusters.Count)
+			{
+				Console.WriteLine("  The title and the geometry agree exactly. Either is usable as the key.");
+			}
+			else
+			{
+				Console.WriteLine("  More titles than signatures - the title row is picking up data as well as");
+				Console.WriteLine("  chrome. Check whether row " + TitleRow + " carries anything account specific.");
+			}
+
+			// A title spanning several signatures is the direct evidence. A signature spanning
+			// several titles is the opposite problem and worth knowing about.
+			var split = byTitle
+				.Where(g => g.Select(s => s.Signature).Distinct().Count() > 1)
+				.ToList();
+
+			if (split.Count > 0)
+			{
+				Console.WriteLine();
+				Console.WriteLine("  titles whose geometry wobbles:");
+				foreach (var group in split.Take(20))
+				{
+					Console.WriteLine("    " + group.Select(s => s.Signature).Distinct().Count()
+						+ " signature(s), " + group.Count() + " screen(s)   \"" + group.Key + "\"");
+				}
+				if (split.Count > 20)
+				{
+					Console.WriteLine("    ... and " + (split.Count - 20) + " more");
+				}
+			}
+
+			var merged = clusters
+				.Where(c => c.Members.Where(m => !string.IsNullOrEmpty(m.Title))
+					.Select(m => m.Title).Distinct().Count() > 1)
+				.ToList();
+
+			if (merged.Count > 0)
+			{
+				Console.WriteLine();
+				Console.WriteLine("  signatures covering more than one title (geometry colliding screens):");
+				foreach (Cluster cluster in merged.Take(10))
+				{
+					Console.WriteLine("    [" + (clusters.IndexOf(cluster) + 1).ToString("D2") + "]  "
+						+ string.Join(" | ", cluster.Members.Select(m => m.Title).Distinct().Take(4)));
+				}
+			}
+		}
+
 
 		/// <summary>
 		/// Reports clusters whose signatures are prefix-compatible but different lengths. That is
