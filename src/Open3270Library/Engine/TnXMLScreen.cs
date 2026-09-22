@@ -555,6 +555,64 @@ namespace Open3270.TN3270
 			return GetText(x+y*_CX, length);
 		}
 
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from one row, or throws. See
+		/// <see cref="IXMLScreen.GetTextExact"/> for why this exists beside
+		/// <see cref="GetText(int,int,int)"/>.
+		/// </summary>
+		public string GetTextExact(int x, int y, int length)
+		{
+			string text;
+			if (!TryGetTextExact(x, y, length, out text))
+			{
+				// Name what was asked for and what is actually there. A recognizer that fails
+				// here is usually looking at a screen it did not expect, and the geometry is the
+				// first thing the person reading the log wants to know.
+				throw new ArgumentOutOfRangeException("length",
+					"Cannot read " + length + " character(s) at column " + x + " of row " + y
+					+ " on a " + _CY + " row by " + _CX + " column screen"
+					+ (mScreenBuffer == null ? " (no screen buffer)" : string.Empty)
+					+ ". The read must start on the screen and finish inside the same row.");
+			}
+			return text;
+		}
+
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from one row, reporting failure
+		/// rather than throwing. See <see cref="IXMLScreen.TryGetTextExact"/>.
+		/// </summary>
+		public bool TryGetTextExact(int x, int y, int length, out string text)
+		{
+			text = null;
+
+			char[] screenBuffer = this.mScreenBuffer;
+			if (screenBuffer == null)
+			{
+				return false;
+			}
+
+			if (x < 0 || y < 0 || length < 0)
+			{
+				return false;
+			}
+
+			// The row bound is the whole point: x + length must finish inside row y, so a read
+			// can never continue into row y + 1 the way the flat-offset overload does.
+			if (x + length > _CX || y >= _CY)
+			{
+				return false;
+			}
+
+			int offset = x + y * _CX;
+			if (offset + length > screenBuffer.Length)
+			{
+				return false;
+			}
+
+			text = new string(screenBuffer, offset, length);
+			return true;
+		}
+
 		
 		public string GetText(int offset, int length)
 		{

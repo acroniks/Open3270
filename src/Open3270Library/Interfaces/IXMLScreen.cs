@@ -67,6 +67,35 @@ namespace Open3270
 		/// <returns></returns>
 		string GetText(int x, int y, int length);
 
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from row <paramref name="y"/>,
+		/// starting at column <paramref name="x"/>, or throws.
+		/// </summary>
+		/// <remarks>
+		/// <see cref="GetText(int,int,int)"/> resolves (x, y) to a flat buffer offset and reads
+		/// forward from there, so a read running past the end of its row silently continues into
+		/// the next one, and a read running past the end of the buffer silently returns a short
+		/// string. An anchor and a session-open assertion are both comparisons, and a comparison
+		/// against text that quietly came from somewhere else is worse than no comparison at all.
+		/// This overload stays inside one row or fails.
+		/// </remarks>
+		/// <param name="x">Column, zero based.</param>
+		/// <param name="y">Row, zero based.</param>
+		/// <param name="length">Characters to read. The whole read must fit inside the row.</param>
+		/// <exception cref="ArgumentOutOfRangeException">
+		/// The read would leave the row, leave the screen, or start outside it.
+		/// </exception>
+		string GetTextExact(int x, int y, int length);
+
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from one row, reporting failure
+		/// rather than throwing. See <see cref="GetTextExact"/>.
+		/// </summary>
+		/// <returns>
+		/// True and the text, or false and null when the read will not fit inside the row.
+		/// </returns>
+		bool TryGetTextExact(int x, int y, int length, out string text);
+
 
 
 	   /// <summary>

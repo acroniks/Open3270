@@ -600,6 +600,89 @@ namespace Open3270
 		{
 			return this.CurrentScreenXML.GetText(x, y, length);
 		}
+
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from row <paramref name="y"/>, or
+		/// throws. Use this, not <see cref="GetText(int,int,int)"/>, for anything that compares
+		/// what it read against something it expected.
+		/// </summary>
+		/// <remarks>
+		/// This adds the one bound the screen object cannot check for itself.
+		/// <see cref="IXMLScreen.CY"/> is floored at 25 rows, so on a 24 row model 2 the screen
+		/// believes it has a row 24 and reads it back as blanks. <see cref="ScreenRows"/> is the
+		/// negotiated truth, and a read of a row the host never sent should fail rather than
+		/// return spaces - silent blanks are how an assertion passes when it should not.
+		/// </remarks>
+		/// <exception cref="ArgumentOutOfRangeException">
+		/// The read would leave the row, or address a row outside the negotiated geometry.
+		/// </exception>
+		public string GetTextExact(int x, int y, int length)
+		{
+			CheckNegotiatedBounds(x, y, length);
+			return this.CurrentScreenXML.GetTextExact(x, y, length);
+		}
+
+		/// <summary>
+		/// Reads exactly <paramref name="length"/> characters from one row, reporting failure
+		/// rather than throwing. See <see cref="GetTextExact"/>.
+		/// </summary>
+		public bool TryGetTextExact(int x, int y, int length, out string text)
+		{
+			text = null;
+
+			if (!WithinNegotiatedBounds(x, y, length))
+			{
+				return false;
+			}
+
+			IXMLScreen screen = this.CurrentScreenXML;
+			if (screen == null)
+			{
+				return false;
+			}
+
+			return screen.TryGetTextExact(x, y, length, out text);
+		}
+
+		/// <summary>
+		/// True when the read fits inside the geometry the host and client negotiated. Zero means
+		/// not connected, in which case there is nothing to check against and the screen object's
+		/// own bounds are all we have.
+		/// </summary>
+		bool WithinNegotiatedBounds(int x, int y, int length)
+		{
+			if (x < 0 || y < 0 || length < 0)
+			{
+				return false;
+			}
+
+			int rows = this.ScreenRows;
+			int columns = this.ScreenColumns;
+
+			if (rows > 0 && y >= rows)
+			{
+				return false;
+			}
+
+			if (columns > 0 && x + length > columns)
+			{
+				return false;
+			}
+
+			return true;
+		}
+
+		void CheckNegotiatedBounds(int x, int y, int length)
+		{
+			if (!WithinNegotiatedBounds(x, y, length))
+			{
+				throw new ArgumentOutOfRangeException("y",
+					"Cannot read " + length + " character(s) at column " + x + " of row " + y
+					+ " on the negotiated " + this.ScreenRows + " row by " + this.ScreenColumns
+					+ " column screen. Note this is stricter than IXMLScreen.CX/CY, which are"
+					+ " floored at 25 by 80 and so report rows the host never sent.");
+			}
+		}
 		/// <summary>
 		/// Sends a string starting at the indicated screen position
 		/// </summary>
