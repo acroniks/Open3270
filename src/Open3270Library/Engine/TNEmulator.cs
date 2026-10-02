@@ -514,24 +514,58 @@ namespace Open3270
 		/// It's probably impractical for this to be much less than 100 ms.</param>
 		/// <param name="finalTimeout">The absolute longest time we should wait before the method should time out</param>
 		/// <returns>True if data ceased, and false if the operation timed out. </returns>
+		/// <remarks>
+		/// Settled means a whole screenCheckInterval passed with no screen arriving, and the
+		/// keyboard is unlocked (unless FastScreenMode is on), so a host that has not answered yet
+		/// is not mistaken for one that has finished. A host may send one reply as several
+		/// writes; this returns after the last of them, not the first.
+		///
+		/// This used to loop on Refresh returning false, so it returned as soon as the first
+		/// screen arrived - the opposite of waiting for the host to settle.
+		/// </remarks>
 		public bool WaitForHostSettle(int screenCheckInterval, int finalTimeout)
 		{
-			bool success = true;
-			//Accumulator for total poll time.  This is less accurate than using an interrupt or DateTime deltas, but it's light weight.
-			int elapsed = 0;
+			if (currentConnection == null) throw new TNHostException("TNEmulator is not connected", "There is no currently open TN3270 connection", null);
 
-			//This is low tech and slow, but simple to implement right now.
-			while (!this.Refresh(true, screenCheckInterval))
+			long deadline = CurrentTimeMS() + finalTimeout;
+
+			while (true)
 			{
-				if (elapsed > finalTimeout)
+				long remaining = deadline - CurrentTimeMS();
+				if (remaining <= 0)
 				{
-					success = false;
-					break;
+					return false;
 				}
-				elapsed += screenCheckInterval;
-			}
 
-			return success;
+				int wait = (int)Math.Min(screenCheckInterval, remaining);
+				bool arrived = semaphore.Acquire(wait);
+
+				if (!IsConnected)
+				{
+					throw new TNHostException("The TN3270 connection was lost", this.currentConnection.DisconnectReason, null);
+				}
+
+				if (arrived)
+				{
+					// Still flowing. The arrival notification has already invalidated the cache.
+					continue;
+				}
+
+				if (wait < screenCheckInterval)
+				{
+					// The quiet period was cut short by the deadline, so it proves nothing.
+					return false;
+				}
+
+				if (this.mConnectionConfiguration.FastScreenMode || this.KeyboardLocked == 0)
+				{
+					lock (this)
+					{
+						DisposeOfCurrentScreenXML();
+					}
+					return true;
+				}
+			}
 		}
 		/// <summary>
 		/// Returns the last asynchronous error that occured internally
