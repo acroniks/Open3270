@@ -63,6 +63,7 @@ namespace Open3270
 		private bool refuseTN3270E = false;
 		private bool useSSL = false;
 		private bool useLegacyXmlScreenRendering = false;
+		private bool revealNonDisplayFields = false;
 
 
 		internal void Dump(IAudit sout)
@@ -83,6 +84,7 @@ namespace Open3270
 			sout.WriteLine("Config.SubmitAllKeyboardCommands " + submitAllKeyboardCommands);
 			sout.WriteLine("Config.RefuseTN3270E " + refuseTN3270E);
 			sout.WriteLine("Config.UseLegacyXmlScreenRendering " + useLegacyXmlScreenRendering);
+			sout.WriteLine("Config.RevealNonDisplayFields " + revealNonDisplayFields);
 		}
 
 		/// <summary>
@@ -232,6 +234,26 @@ namespace Open3270
 		{
 			get { return useLegacyXmlScreenRendering; }
 			set { useLegacyXmlScreenRendering = value; }
+		}
+
+		/// <summary>
+		/// Whether the rendered screen shows the contents of non-display (dark) fields. Default is
+		/// false: they render as blanks, which is what a real terminal shows.
+		/// </summary>
+		/// <remarks>
+		/// A host can blank a field without erasing it by re-sending only its attribute as
+		/// non-display - CICS does this for unused rows of a paged list - so the previous page's
+		/// characters are still in the buffer underneath. Revealing them makes those rows read as
+		/// if they were still on screen. Passwords are typed into non-display fields too.
+		/// This only affects the rendered screen (GetText, GetRow, Dump, LookForTextStrings).
+		/// <see cref="IXMLScreen.Fields"/> always carries a field's raw text, with FieldType
+		/// "Hidden" to say it is not displayed, and GetUnformatedStrings is always raw.
+		/// Set this to true only for code that depended on reading hidden text from the screen.
+		/// </remarks>
+		public bool RevealNonDisplayFields
+		{
+			get { return revealNonDisplayFields; }
+			set { revealNonDisplayFields = value; }
 		}
 
 

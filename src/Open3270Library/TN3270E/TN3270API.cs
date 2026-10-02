@@ -513,9 +513,17 @@ namespace Open3270.TN3270
         /// </summary>
         public IXMLScreen BuildCurrentScreen()
         {
+            return BuildCurrentScreen(false);
+        }
+        /// <summary>
+        /// As <see cref="BuildCurrentScreen()"/>, choosing whether non-display fields render.
+        /// See <see cref="ConnectionConfig.RevealNonDisplayFields"/>.
+        /// </summary>
+        public IXMLScreen BuildCurrentScreen(bool revealNonDisplayFields)
+        {
             lock (this.tn)
             {
-                return this.tn.Controller.BuildXMLScreen();
+                return this.tn.Controller.BuildXMLScreen(revealNonDisplayFields);
             }
         }
         /// <summary>Client bytes compared against a replayed recording.</summary>
