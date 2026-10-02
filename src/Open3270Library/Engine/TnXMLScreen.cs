@@ -70,6 +70,9 @@ namespace Open3270.TN3270
 
 		private string _stringValueCache = null;
 
+		// See ConnectionConfig.RevealNonDisplayFields. Private, so XmlSerializer leaves it alone.
+		private bool _revealNonDisplayFields = false;
+
 
 		public int CX { get { return _CX; }}
 		public int CY { get { return _CY; }}
@@ -334,6 +337,10 @@ namespace Open3270.TN3270
 				for (i=0; i<Field.Length; i++)
 				{
 					XMLScreenField field = Field[i];
+					if (BlankIfNotDisplayed(field))
+					{
+						continue;
+					}
 					if (field.Text != null)
 					{
 						for (chindex=0; chindex<field.Text.Length; chindex++)
@@ -396,13 +403,41 @@ namespace Open3270.TN3270
 		}
 
 		/// <summary>
+		/// Blanks a non-display field in the rendered buffer, as a terminal would draw it, and
+		/// says whether it did. Shared by Render and RenderFromRows so both paths agree.
+		///
+		/// The whole field length is blanked, not just its text: the unformatted rows were laid
+		/// down first and already carry the hidden characters, and a blank field's Text may be
+		/// empty or null, so overlaying the text alone would leave them showing.
+		/// </summary>
+		private bool BlankIfNotDisplayed(XMLScreenField field)
+		{
+			if (_revealNonDisplayFields || field.Attributes == null || field.Location == null
+				|| field.Attributes.FieldType != "Hidden")
+			{
+				return false;
+			}
+
+			int offset = field.Location.left + field.Location.top * _CX;
+			for (int chindex = 0; chindex < field.Location.length; chindex++)
+			{
+				int bufNdx = offset + chindex;
+				if (bufNdx >= 0 && bufNdx < mScreenBuffer.Length)
+					mScreenBuffer[bufNdx] = ' ';
+			}
+			return true;
+		}
+
+		/// <summary>
 		/// Builds a screen directly from the emulator's screen buffer, skipping the XML
 		/// serialize/parse round trip that LoadFromString performs. The rendered buffer, rows and
 		/// hash are identical to what Render() produces for the same screen.
 		/// </summary>
-		internal static XMLScreen CreateFromScreenBuffer(int cx, int cy, bool formatted, XMLScreenField[] fields, string[] unformattedRows)
+		internal static XMLScreen CreateFromScreenBuffer(int cx, int cy, bool formatted, XMLScreenField[] fields, string[] unformattedRows, bool revealNonDisplayFields)
 		{
 			XMLScreen screen = new XMLScreen();
+
+			screen._revealNonDisplayFields = revealNonDisplayFields;
 
 			screen._CX = cx;
 			screen._CY = cy;
@@ -473,7 +508,11 @@ namespace Open3270.TN3270
 				for (i = 0; i < Field.Length; i++)
 				{
 					XMLScreenField field = Field[i];
-					if (field == null || field.Text == null || field.Location == null)
+					if (field == null || field.Location == null)
+						continue;
+					if (BlankIfNotDisplayed(field))
+						continue;
+					if (field.Text == null)
 						continue;
 
 					int offset = field.Location.left + field.Location.top * _CX;
@@ -509,6 +548,15 @@ namespace Open3270.TN3270
 
 		static public XMLScreen LoadFromString(string text)
 		{
+			return LoadFromString(text, false);
+		}
+
+		/// <summary>
+		/// As <see cref="LoadFromString(string)"/>, choosing whether non-display fields render.
+		/// See <see cref="ConnectionConfig.RevealNonDisplayFields"/>.
+		/// </summary>
+		static public XMLScreen LoadFromString(string text, bool revealNonDisplayFields)
+		{
 			XmlSerializer serializer = new XmlSerializer(typeof(XMLScreen));
 			//
 			StringReader fs = null;
@@ -535,6 +583,7 @@ namespace Open3270.TN3270
 				if (fs != null)
 					fs.Close();
 			}
+			rules._revealNonDisplayFields = revealNonDisplayFields;
 			rules.Render();
 			rules._stringValueCache = text;
 			return rules;

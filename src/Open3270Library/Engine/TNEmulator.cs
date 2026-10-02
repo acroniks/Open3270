@@ -960,13 +960,13 @@ namespace Open3270
 			{
 				// Read the screen buffer straight into an XMLScreen instead of dumping it to XML
 				// text and parsing it back again.
-				return currentConnection.BuildCurrentScreen();
+				return currentConnection.BuildCurrentScreen(this.mConnectionConfiguration.RevealNonDisplayFields);
 			}
 
 			if (currentConnection.ExecuteAction(false, "DumpXML"))
 			{
 				//
-				return XMLScreen.LoadFromString(currentConnection.GetAllStringData(false));
+				return XMLScreen.LoadFromString(currentConnection.GetAllStringData(false), this.mConnectionConfiguration.RevealNonDisplayFields);
 			}
 			else
 				return null;

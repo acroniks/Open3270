@@ -3311,7 +3311,7 @@ namespace Open3270.TN3270
 		/// again on every screen fetch. The field walk is shared with DumpXMLAction through
 		/// EnumerateFieldSegments.
 		/// </summary>
-		internal XMLScreen BuildXMLScreen()
+		internal XMLScreen BuildXMLScreen(bool revealNonDisplayFields)
 		{
 			string[] unformattedRows = new string[rowCount];
 			for (int row = 0; row < rowCount; row++)
@@ -3362,7 +3362,7 @@ namespace Open3270.TN3270
 				}
 			}
 
-			return XMLScreen.CreateFromScreenBuffer(columnCount, rowCount, this.isFormatted, fields, unformattedRows);
+			return XMLScreen.CreateFromScreenBuffer(columnCount, rowCount, this.isFormatted, fields, unformattedRows, revealNonDisplayFields);
 		}
 
 
